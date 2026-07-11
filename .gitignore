@@ -1,0 +1,4 @@
+/build*/
+*.grb
+*.tpxocache
+__pycache__/
