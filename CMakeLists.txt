@@ -15,7 +15,7 @@ pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
 find_path(PROJ_INCLUDE_DIR proj.h HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES include)
 find_library(PROJ_LIBRARY NAMES proj HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES lib)
 
-add_library(environmental_grib_engine
+add_library(environmental_grib_engine STATIC
   src/arco.cpp
   src/environment.cpp
   src/copernicus.cpp
