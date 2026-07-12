@@ -16,6 +16,7 @@
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/job.h"
 #include "environmental_grib/model.h"
 #include "environmental_grib/netcdf.h"
 #include "environmental_grib/providers.h"
@@ -231,6 +232,46 @@ std::filesystem::path Temp(const std::string& name) {
 }  // namespace
 
 int main() {
+  Json::Value job_json(Json::objectValue);
+  job_json["schemaVersion"] = 1;
+  job_json["operation"] = "generateEnvironment";
+  auto& job_request = job_json["request"];
+  job_request["bbox"]["west"] = -8.5;
+  job_request["bbox"]["south"] = 50.5;
+  job_request["bbox"]["east"] = -2.5;
+  job_request["bbox"]["north"] = 56.5;
+  job_request["start"] = "2026-07-12T00:00:00Z";
+  job_request["hours"] = 24;
+  job_request["stepHours"] = 3;
+  job_request["weatherProvider"] = "gfs";
+  job_request["currentSource"] = "none";
+  job_request["autoPrepareTpxoCache"] = true;
+  job_request["output"] = "/tmp/environmental-grib-job-test.grb";
+  job_request["overwrite"] = true;
+  job_json["credentials"]["copernicusPasswordEnvironment"] = "TEST_SECRET";
+  const auto parsed_job = eg::ParseGeneratorJob(job_json);
+  Check(parsed_job.request.bbox.west == -8.5 &&
+            parsed_job.request.hours == 24 &&
+            parsed_job.request.weather_provider == "gfs" &&
+            parsed_job.request.overwrite &&
+            parsed_job.request.auto_prepare_tpxo_cache,
+        "job protocol request mapping");
+  Check(parsed_job.copernicus_password_environment == "TEST_SECRET",
+        "job protocol secret environment mapping");
+  const auto capabilities = eg::GeneratorCapabilitiesJson();
+  Check(capabilities["schemaVersion"].asInt() == 1 &&
+            capabilities["operations"][0].asString() ==
+                "generateEnvironment",
+        "job protocol capabilities");
+  job_json["schemaVersion"] = 2;
+  bool rejected_job_schema = false;
+  try {
+    eg::ParseGeneratorJob(job_json);
+  } catch (const eg::ValidationError&) {
+    rejected_job_schema = true;
+  }
+  Check(rejected_job_schema, "job protocol rejects unsupported schema");
+
   const eg::BoundingBox bbox{-1.0, 50.0, 0.0, 51.0};
   bbox.Validate();
   ExpectValidation([] { eg::BoundingBox{-4.0, 51.5, -7.0, 55.5}.Validate(); },

@@ -21,6 +21,7 @@ add_library(environmental_grib_engine
   src/copernicus.cpp
   src/geo.cpp
   src/grib.cpp
+  src/job.cpp
   src/model.cpp
   src/netcdf.cpp
   src/providers.cpp

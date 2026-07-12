@@ -253,6 +253,17 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   } else if (current_source == "tpxo-cache") {
     if (!request.input_cache)
       throw ValidationError("tpxo-cache current source requires input-cache");
+    if (!std::filesystem::is_regular_file(*request.input_cache) &&
+        request.auto_prepare_tpxo_cache) {
+      if (!request.tpxo_model_directory) {
+        throw ValidationError(
+            "automatic TPXO cache preparation requires tpxoModelDirectory");
+      }
+      Report(progress, "preparing TPXO cache", request.input_cache->string());
+      PrepareTpxo10Cache(*request.tpxo_model_directory, request.bbox,
+                         request.current_grid_spacing_deg,
+                         *request.input_cache, true);
+    }
     streams.emplace_back(
         "current",
         GenerateFromTpxoCache(*request.input_cache, request.start,

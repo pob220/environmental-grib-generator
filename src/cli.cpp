@@ -13,6 +13,7 @@
 #include "environmental_grib/environment.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/job.h"
 #include "environmental_grib/netcdf.h"
 #include "environmental_grib/providers.h"
 #include "environmental_grib/remote_currents.h"
@@ -59,6 +60,24 @@ void PrintJson(const Json::Value& value) {
   Json::StreamWriterBuilder builder;
   builder["indentation"] = "  ";
   std::cout << Json::writeString(builder, value) << '\n';
+}
+
+Json::Value ReadJsonFile(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw eg::ValidationError("cannot open job file: " + path.string());
+  Json::CharReaderBuilder builder;
+  Json::Value value;
+  std::string errors;
+  if (!Json::parseFromStream(builder, input, &value, &errors)) {
+    throw eg::ValidationError("invalid job JSON: " + errors);
+  }
+  return value;
+}
+
+void PrintEvent(const Json::Value& value) {
+  Json::StreamWriterBuilder builder;
+  builder["indentation"] = "";
+  std::cout << Json::writeString(builder, value) << '\n' << std::flush;
 }
 
 Json::Value ProviderJson(const eg::Provider& provider) {
@@ -323,6 +342,68 @@ int GenerateEnvironment(const std::vector<std::string>& args) {
   return 0;
 }
 
+int RunJob(const std::vector<std::string>& args) {
+  std::filesystem::path job_path;
+  std::filesystem::path result_path;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    if (args[i] == "--job") job_path = RequireValue(args, i, args[i]);
+    else if (args[i] == "--result") result_path = RequireValue(args, i, args[i]);
+    else throw eg::ValidationError("unknown run-job option: " + args[i]);
+  }
+  if (job_path.empty() || result_path.empty()) {
+    throw eg::ValidationError("run-job requires --job and --result");
+  }
+
+  auto running = eg::JobStatusJson("running");
+  eg::WriteJsonFileAtomic(result_path, running);
+  Json::Value started = running;
+  started["event"] = "started";
+  PrintEvent(started);
+
+  try {
+    auto job = eg::ParseGeneratorJob(ReadJsonFile(job_path));
+    if (const char* password =
+            std::getenv(job.copernicus_password_environment.c_str())) {
+      job.request.copernicus_password = password;
+    }
+    auto progress = [](const std::string& stage, const Json::Value& details) {
+      Json::Value event(Json::objectValue);
+      event["schemaVersion"] = eg::kJobSchemaVersion;
+      event["event"] = "progress";
+      event["stage"] = stage;
+      event["details"] = details;
+      PrintEvent(event);
+    };
+    const auto generated = eg::GenerateEnvironment(
+        job.request, {}, std::nullopt, progress);
+    auto result = eg::JobStatusJson("complete");
+    result["result"] = eg::EnvironmentResultJson(generated);
+    eg::WriteJsonFileAtomic(result_path, result);
+    Json::Value complete = result;
+    complete["event"] = "complete";
+    PrintEvent(complete);
+    return 0;
+  } catch (const std::exception& error) {
+    auto result = eg::JobStatusJson("failed");
+    result["error"]["code"] = "generation_failed";
+    result["error"]["message"] = error.what();
+    try {
+      eg::WriteJsonFileAtomic(result_path, result);
+    } catch (const std::exception& write_error) {
+      std::cerr << "cannot write failed job result: " << write_error.what()
+                << '\n';
+    }
+    result["event"] = "failed";
+    PrintEvent(result);
+    return 1;
+  }
+}
+
+int Capabilities() {
+  PrintJson(eg::GeneratorCapabilitiesJson());
+  return 0;
+}
+
 int Inspect(const std::vector<std::string>& args) {
   if (args.size() != 2) throw eg::ValidationError("usage: environmental-grib inspect-grib FILE");
   PrintJson(eg::InspectGrib(args[1]));
@@ -517,6 +598,8 @@ void Usage() {
             << "  generate-copernicus [options]\n"
             << "  generate-rtofs [options]\n"
             << "  generate-environment-grib [options]\n"
+            << "  run-job --job FILE --result FILE\n"
+            << "  capabilities\n"
             << "  inspect-tpxo-cache FILE\n"
             << "  prepare-tpxo-cache [options]\n"
             << "  normalize-grib INPUT OUTPUT\n"
@@ -541,6 +624,8 @@ int main(int argc, char** argv) {
     if (args[0] == "generate-copernicus") return GenerateCopernicus(args);
     if (args[0] == "generate-rtofs") return GenerateRtofs(args);
     if (args[0] == "generate-environment-grib") return GenerateEnvironment(args);
+    if (args[0] == "run-job") return RunJob(args);
+    if (args[0] == "capabilities") return Capabilities();
     if (args[0] == "inspect-tpxo-cache") return InspectTpxo(args);
     if (args[0] == "prepare-tpxo-cache") return PrepareTpxo(args);
     if (args[0] == "inspect-grib") return Inspect(args);

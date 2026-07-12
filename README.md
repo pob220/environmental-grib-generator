@@ -5,6 +5,9 @@ A standalone native engine reproducing the production generation paths of
 dependency, allowing the eventual OpenCPN catalogue plugin, CLI and tests to
 call one implementation.
 
+The native executable also provides a versioned job-file interface intended
+for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
+
 ## Dependencies
 
 The engine uses maintained distribution libraries: ecCodes, JsonCpp, NetCDF-C,
