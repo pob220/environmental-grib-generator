@@ -182,9 +182,7 @@ std::complex<double> Bilinear(const RegionalField& source,double lon,double lat)
   return q00*(1-fx)*(1-fy)+q10*fx*(1-fy)+q01*(1-fx)*fy+q11*fx*fy;
 }
 
-std::vector<std::filesystem::path> ModelFiles(const std::filesystem::path& root) {
-  const auto directory=root/"TPXO10_atlas_v2";
-  if(!std::filesystem::is_directory(directory)) throw ValidationError("TPXO10_atlas_v2 model directory not found: "+directory.string());
+std::vector<std::filesystem::path> ModelFiles(const std::filesystem::path& directory) {
   std::vector<std::filesystem::path> files;
   for(const auto& entry:std::filesystem::directory_iterator(directory)) {
     const auto name=entry.path().filename().string();
@@ -197,14 +195,33 @@ std::vector<std::filesystem::path> ModelFiles(const std::filesystem::path& root)
 
 }  // namespace
 
+std::filesystem::path ResolveTpxo10AtlasDirectory(
+    const std::filesystem::path& model_directory) {
+  const auto direct_grid = model_directory / "grid_tpxo10atlas_v2.nc";
+  const auto nested = model_directory / "TPXO10_atlas_v2";
+  const auto nested_grid = nested / "grid_tpxo10atlas_v2.nc";
+  std::filesystem::path directory;
+  if (std::filesystem::is_regular_file(direct_grid)) {
+    directory = model_directory;
+  } else if (std::filesystem::is_regular_file(nested_grid)) {
+    directory = nested;
+  } else {
+    throw ValidationError(
+        "TPXO10 grid file not found; select either the model parent or "
+        "TPXO10_atlas_v2 directory (checked " + direct_grid.string() +
+        " and " + nested_grid.string() + ")");
+  }
+  ModelFiles(directory);
+  return directory;
+}
+
 TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
                                const BoundingBox& bbox,
                                const RegularGrid& output_grid) {
   bbox.Validate();
-  const auto directory=model_directory/"TPXO10_atlas_v2";
+  const auto directory=ResolveTpxo10AtlasDirectory(model_directory);
   const auto grid_file=directory/"grid_tpxo10atlas_v2.nc";
-  if(!std::filesystem::is_regular_file(grid_file)) throw ValidationError("TPXO10 grid file not found: "+grid_file.string());
-  const auto files=ModelFiles(model_directory);
+  const auto files=ModelFiles(directory);
   TpxoCache cache; cache.bbox=bbox; cache.grid=output_grid;
   cache.metadata["format"]="tidal-current-grib-generator-tpxo-cache";
   cache.metadata["format_version"]=1; cache.metadata["model_name"]="TPXO10-atlas-v2-nc";
@@ -216,7 +233,8 @@ TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
     const auto stat_path=[&](const std::filesystem::path& path) {
       Json::Value record(Json::objectValue);
       record["name"]=path.filename().string();
-      record["relative_path"]=std::filesystem::relative(path,model_directory).string();
+      record["relative_path"]=
+          std::filesystem::relative(path,directory.parent_path()).string();
       record["size"]=Json::UInt64(std::filesystem::file_size(path));
       const auto ticks=std::filesystem::last_write_time(path).time_since_epoch().count();
       record["mtime"]=Json::Int64(ticks);

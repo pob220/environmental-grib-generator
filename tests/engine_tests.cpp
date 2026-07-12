@@ -24,6 +24,7 @@
 #include "environmental_grib/rtofs.h"
 #include "environmental_grib/security.h"
 #include "environmental_grib/sources.h"
+#include "environmental_grib/tpxo.h"
 #include "environmental_grib/weather.h"
 #include "environmental_grib/waves.h"
 #include "environmental_grib/ukv.h"
@@ -271,6 +272,43 @@ int main() {
     rejected_job_schema = true;
   }
   Check(rejected_job_schema, "job protocol rejects unsupported schema");
+
+  const auto tpxo_root = Temp("tpxo-layout");
+  const auto tpxo_atlas = tpxo_root / "TPXO10_atlas_v2";
+  std::filesystem::create_directories(tpxo_atlas);
+  std::ofstream(tpxo_atlas / "grid_tpxo10atlas_v2.nc").put('\0');
+  std::ofstream(tpxo_atlas / "u_m2_tpxo10_atlas_30_v2.nc").put('\0');
+  Check(eg::ResolveTpxo10AtlasDirectory(tpxo_root) == tpxo_atlas,
+        "TPXO parent directory resolves atlas");
+  Check(eg::ResolveTpxo10AtlasDirectory(tpxo_atlas) == tpxo_atlas,
+        "TPXO direct atlas directory resolves without duplication");
+
+  eg::EnvironmentRequest invalid_tpxo;
+  invalid_tpxo.bbox = {-8.5, 50.5, -2.5, 56.5};
+  invalid_tpxo.start = eg::ParseUtcDateTime("2026-07-12T00:00:00Z");
+  invalid_tpxo.hours = 6;
+  invalid_tpxo.step_hours = 3;
+  invalid_tpxo.weather_provider = "gfs";
+  invalid_tpxo.current_source = "tpxo-cache";
+  invalid_tpxo.input_cache = Temp("missing-cache.tpxocache");
+  invalid_tpxo.auto_prepare_tpxo_cache = true;
+  invalid_tpxo.tpxo_model_directory = Temp("missing-model");
+  invalid_tpxo.output = Temp("invalid-tpxo-output.grb");
+  invalid_tpxo.overwrite = true;
+  int preflight_http_calls = 0;
+  ExpectValidation(
+      [&] {
+        eg::GenerateEnvironment(
+            invalid_tpxo,
+            [&](const std::string&, double) {
+              ++preflight_http_calls;
+              return std::vector<unsigned char>{};
+            });
+      },
+      "invalid TPXO model rejected before generation");
+  Check(preflight_http_calls == 0,
+        "invalid TPXO model rejected before weather downloads");
+  std::filesystem::remove_all(tpxo_root);
 
   const eg::BoundingBox bbox{-1.0, 50.0, 0.0, 51.0};
   bbox.Validate();

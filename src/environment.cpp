@@ -72,10 +72,28 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   if (request.output.empty()) throw ValidationError("environment output path is required");
   if (std::filesystem::exists(request.output) && !request.overwrite) throw ValidationError("output already exists; enable overwrite to replace it");
   if (request.weather_provider == "none" && request.current_source == "none") throw ValidationError("at least one weather or current source must be enabled");
+  const std::string current_source = ResolveCurrentSource(request);
+  if (current_source == "tpxo-cache") {
+    if (!request.input_cache)
+      throw ValidationError("tpxo-cache current source requires input-cache");
+    if (!std::filesystem::is_regular_file(*request.input_cache)) {
+      if (!request.auto_prepare_tpxo_cache)
+        throw ValidationError("TPXO cache file not found: " +
+                              request.input_cache->string());
+      if (!request.tpxo_model_directory)
+        throw ValidationError(
+            "automatic TPXO cache preparation requires tpxoModelDirectory");
+      ResolveTpxo10AtlasDirectory(*request.tpxo_model_directory);
+    }
+  } else if (current_source == "tpxo") {
+    if (!request.tpxo_model_directory)
+      throw ValidationError("tpxo current source requires model-dir");
+    ResolveTpxo10AtlasDirectory(*request.tpxo_model_directory);
+  }
   if (request.dry_run) {
     return {request.output, 0, 0, request.weather_provider,
             request.include_waves ? request.wave_provider : "none",
-            request.current_source, std::nullopt, {}, Json::Value(Json::objectValue)};
+            current_source, std::nullopt, {}, Json::Value(Json::objectValue)};
   }
   Workspace workspace(request.output, request.keep_intermediate);
   std::vector<std::pair<std::string, std::filesystem::path>> streams;
@@ -197,7 +215,6 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                  request.wave_provider);
   }
 
-  const std::string current_source = ResolveCurrentSource(request);
   if (current_source == "existing-file") {
     if (!request.current_file) throw ValidationError("existing current source requires current-file");
     streams.emplace_back("current", CopyValidated(*request.current_file, workspace.File("current.grb")));

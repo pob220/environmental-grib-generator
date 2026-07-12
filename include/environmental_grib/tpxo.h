@@ -54,6 +54,8 @@ TpxoGenerationResult GenerateFromTpxoCache(
 TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
                                const BoundingBox& bbox,
                                const RegularGrid& output_grid);
+std::filesystem::path ResolveTpxo10AtlasDirectory(
+    const std::filesystem::path& model_directory);
 TpxoGenerationResult GenerateFromTpxo10AtlasModel(
     const TpxoModelRequest& request);
 Json::Value PrepareTpxo10Cache(const std::filesystem::path& model_directory,
