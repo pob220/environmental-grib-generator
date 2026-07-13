@@ -11,6 +11,7 @@
 #include <json/json.h>
 
 #include "environmental_grib/tpxo.h"
+#include "environmental_grib/random_access.h"
 
 namespace environmental_grib {
 
@@ -56,6 +57,8 @@ struct XtdStatus {
 class XtdReader {
  public:
   explicit XtdReader(const std::filesystem::path& path,
+                     XtdReaderOptions options = {});
+  explicit XtdReader(std::shared_ptr<RandomAccessSource> source,
                      XtdReaderOptions options = {});
   ~XtdReader();
 

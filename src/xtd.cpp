@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <list>
 #include <memory>
@@ -96,24 +95,6 @@ std::uint64_t CheckedMultiply(std::uint64_t left, std::uint64_t right,
     Invalid(std::string(what) + " overflows");
   }
   return left * right;
-}
-
-Bytes ReadAt(std::ifstream& input, std::uint64_t offset, std::size_t length,
-             const std::string& description) {
-  if (offset > static_cast<std::uint64_t>(
-                   std::numeric_limits<std::streamoff>::max())) {
-    Invalid(description + " offset is not representable");
-  }
-  Bytes result(length);
-  input.clear();
-  input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-  if (!input ||
-      (length != 0 &&
-       !input.read(reinterpret_cast<char*>(result.data()),
-                   static_cast<std::streamsize>(length)))) {
-    Invalid("could not read " + description);
-  }
-  return result;
 }
 
 struct Header {
@@ -675,32 +656,34 @@ void ValidateOutputGrid(const RegularGrid& grid) {
 class XtdReader::Impl {
  public:
   Impl(const std::filesystem::path& path, XtdReaderOptions options)
-      : path_(path),
+      : Impl(OpenFileSource(path), std::move(options)) {
+    status_.path = path;
+  }
+
+  Impl(std::shared_ptr<RandomAccessSource> source, XtdReaderOptions options)
+      : source_(std::move(source)),
         capacity_(options.tile_cache_capacity),
-        max_cache_bytes_(options.tile_cache_max_bytes),
-        input_(path, std::ios::binary) {
+        max_cache_bytes_(options.tile_cache_max_bytes) {
     const auto validation_started = Clock::now();
     xtd_internal::EnsureSodium();
-    if (!input_) throw ValidationError("could not read XTD package " + path.string());
-    std::error_code error;
-    const std::uint64_t file_length = std::filesystem::file_size(path, error);
-    if (error || file_length < kHeaderSize) {
-      throw ValidationError("could not determine XTD package size " + path.string());
+    if (!source_ || source_->size() < kHeaderSize) {
+      throw ValidationError("could not determine XTD package size");
     }
-    header_raw_ = ReadAt(input_, 0, kHeaderSize, "XTD header");
+    const std::uint64_t file_length = source_->size();
+    header_raw_ = source_->Read(0, kHeaderSize, "XTD header");
     header_ = ParseHeader(header_raw_, file_length);
-    metadata_raw_ = ReadAt(input_, header_.metadata_offset,
-                           static_cast<std::size_t>(header_.metadata_length),
-                           "XTD metadata");
+    metadata_raw_ = source_->Read(
+        header_.metadata_offset,
+        static_cast<std::size_t>(header_.metadata_length), "XTD metadata");
     status_.metadata =
         ParseMetadata(metadata_raw_, header_, &status_.constituents);
     const std::uint64_t index_size = header_.index_count * kIndexEntrySize;
-    index_raw_ = ReadAt(input_, header_.index_offset,
-                        static_cast<std::size_t>(index_size), "XTD index");
+    index_raw_ = source_->Read(header_.index_offset,
+                              static_cast<std::size_t>(index_size),
+                              "XTD index");
     index_ = ParseIndex(index_raw_, header_);
     Authenticate();
 
-    status_.path = path;
     status_.bbox = header_.bbox;
     std::copy(header_.package_id.begin(), header_.package_id.end(),
               status_.package_id.begin());
@@ -846,8 +829,8 @@ class XtdReader::Impl {
       tile->width = entry.width;
       tile->height = entry.height;
     } else {
-      Bytes encrypted = ReadAt(input_, entry.offset, entry.encrypted_length,
-                               "encrypted XTD tile");
+      Bytes encrypted = source_->Read(entry.offset, entry.encrypted_length,
+                                      "encrypted XTD tile");
       Bytes compressed(entry.encrypted_length -
                        crypto_aead_xchacha20poly1305_ietf_ABYTES);
       const auto aad = TileAad(header_, entry);
@@ -952,10 +935,9 @@ class XtdReader::Impl {
     }
   }
 
-  std::filesystem::path path_;
+  std::shared_ptr<RandomAccessSource> source_;
   std::size_t capacity_{};
   std::uint64_t max_cache_bytes_{};
-  std::ifstream input_;
   Header header_;
   Bytes header_raw_, metadata_raw_, index_raw_;
   std::vector<IndexEntry> index_;
@@ -970,6 +952,10 @@ class XtdReader::Impl {
 XtdReader::XtdReader(const std::filesystem::path& path,
                      XtdReaderOptions options)
     : impl_(std::make_unique<Impl>(path, options)) {}
+
+XtdReader::XtdReader(std::shared_ptr<RandomAccessSource> source,
+                     XtdReaderOptions options)
+    : impl_(std::make_unique<Impl>(std::move(source), options)) {}
 
 XtdReader::~XtdReader() = default;
 XtdReader::XtdReader(XtdReader&&) noexcept = default;

@@ -31,6 +31,7 @@ struct EnvironmentRequest {
   std::optional<std::filesystem::path> input_netcdf;
   std::optional<std::filesystem::path> input_cache;
   std::optional<std::filesystem::path> offline_tidal_file;
+  std::string offline_current_mode{"tide-only"};
   std::optional<std::filesystem::path> tpxo_model_directory;
   bool auto_prepare_tpxo_cache{false};
   std::filesystem::path download_directory;

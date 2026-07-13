@@ -27,20 +27,24 @@ ProviderRegistry::ProviderRegistry() {
        .variables = {"49", "50"},
        .implemented = true,
        .resolution = "ready-made Irish Sea current GRIB",
-       .description = "Ready-made OpenCPN-compatible Irish Sea current GRIB from Marine Institute Ireland.",
+       .description = "Ready-made OpenCPN-compatible Irish Sea current GRIB "
+                      "from Marine Institute Ireland.",
        .default_step_hours = 1,
        .provider_type = "direct_current_grib",
        .nominal_duration_hours = 72,
        .max_duration_hours = 72,
-       .source_url = "ftp://ftp.marine.ie/OSS/modelling/GRIB_Files/irish_sea_ms.grb"},
+       .source_url =
+           "ftp://ftp.marine.ie/OSS/modelling/GRIB_Files/irish_sea_ms.grb"},
       {.id = "copernicus_nws",
        .label = "Copernicus Marine North-West Shelf high-resolution currents",
        .coverage = BoundingBox{-20.0, 40.0, 13.0, 65.0},
        .dataset_id = "cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i",
-       .variables = {"eastward_sea_water_velocity", "northward_sea_water_velocity"},
+       .variables = {"eastward_sea_water_velocity",
+                     "northward_sea_water_velocity"},
        .implemented = true,
        .resolution = "approx 1.5 km",
-       .description = "Modelled North-West European shelf currents including tides/residuals.",
+       .description = "Modelled North-West European shelf currents including "
+                      "tides/residuals.",
        .product_id = "NWSHELF_ANALYSISFORECAST_PHY_004_013"},
       {.id = "copernicus_global",
        .label = "Copernicus Marine Global currents",
@@ -49,7 +53,8 @@ ProviderRegistry::ProviderRegistry() {
        .variables = {"uo", "vo"},
        .implemented = true,
        .resolution = "about 0.083 degrees / 1/12 degree",
-       .description = "Global Copernicus Ocean Physics Analysis and Forecast surface currents via native ARCO chunk decoding.",
+       .description = "Global Copernicus Ocean Physics Analysis and Forecast "
+                      "surface currents via native ARCO chunk decoding.",
        .product_id = "GLOBAL_ANALYSISFORECAST_PHY_001_024",
        .default_step_hours = 1,
        .minimum_depth = 0.0,
@@ -61,7 +66,9 @@ ProviderRegistry::ProviderRegistry() {
        .variables = {"u", "v"},
        .implemented = true,
        .resolution = "about 1/12 degree native HYCOM grid",
-       .description = "NOAA Real-Time Ocean Forecast System global model via public regional NetCDF files for US East, US West, and Alaska.",
+       .description =
+           "NOAA Real-Time Ocean Forecast System global model via public "
+           "regional NetCDF files for US East, US West, and Alaska.",
        .product_id = "NOAA/NCEP RTOFS",
        .default_step_hours = 6,
        .minimum_depth = 0.0,
@@ -69,14 +76,16 @@ ProviderRegistry::ProviderRegistry() {
        .provider_type = "model",
        .nominal_duration_hours = 192,
        .max_duration_hours = 192,
-       .source_url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rtofs/prod/"},
+       .source_url =
+           "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rtofs/prod/"},
       {.id = "noaa_ofs_s111",
        .label = "NOAA OFS / S-111 coastal currents",
        .dataset_id = "noaa_ofs_s111",
        .variables = {"surfaceCurrentSpeed", "surfaceCurrentDirection"},
        .implemented = false,
        .resolution = "regional NOAA OFS/S-111 product native grids",
-       .description = "Experimental discovery only; not yet a complete generator.",
+       .description =
+           "Experimental discovery only; not yet a complete generator.",
        .provider_type = "experimental_discovery",
        .source_url = "https://registry.opendata.aws/noaa-nos-ofs/"},
       {.id = "local_netcdf",
@@ -89,22 +98,24 @@ ProviderRegistry::ProviderRegistry() {
        .coverage = BoundingBox{-180.0, -90.0, 180.0, 90.0},
        .implemented = true,
        .resolution = "licensed TPXO10 Atlas v2 model grid",
-       .description = "Native regional interpolation and harmonic prediction from user-supplied TPXO10 Atlas v2 NetCDF files.",
+       .description = "Native regional interpolation and harmonic prediction "
+                      "from user-supplied TPXO10 Atlas v2 NetCDF files.",
        .provider_type = "local_licensed_model"},
       {.id = "tpxo-cache",
        .label = "Prepared TPXO astronomical tidal-current cache",
        .implemented = true,
        .resolution = "prepared cache grid",
-       .description = "Native prediction from a portable cache derived from user-supplied licensed TPXO model files.",
+       .description = "Native prediction from a portable cache derived from "
+                      "user-supplied licensed TPXO model files.",
        .provider_type = "local_harmonic_cache"},
       {.id = "offline-tidal",
-       .label = "Offline Tidal",
+       .label = "Offline current (.xtd)",
        .coverage = BoundingBox{-180.0, -90.0, 180.0, 90.0},
        .variables = {"49", "50"},
        .implemented = true,
        .resolution = "full nominal Atlas 1/30 degree source grid",
-       .description =
-           "Offline astronomical tidal-current prediction from an xGRIB XTD data package.",
+       .description = "Offline astronomical tidal-current prediction from an "
+                      "xGRIB XTD data package.",
        .product_id = "xgrib-global-tides.xtd",
        .default_step_hours = 1,
        .provider_type = "local_xtd_harmonic_package"},
@@ -118,15 +129,17 @@ ProviderRegistry::ProviderRegistry() {
 }
 
 const Provider& ProviderRegistry::Get(const std::string& id) const {
-  const auto found = std::find_if(providers_.begin(), providers_.end(),
-                                  [&](const Provider& value) { return value.id == id; });
-  if (found == providers_.end()) throw ValidationError("unknown provider: " + id);
+  const auto found =
+      std::find_if(providers_.begin(), providers_.end(),
+                   [&](const Provider& value) { return value.id == id; });
+  if (found == providers_.end())
+    throw ValidationError("unknown provider: " + id);
   return *found;
 }
 
-const Provider* SelectBestProviderForBbox(
-    const BoundingBox& bbox, std::optional<int> duration_hours,
-    const ProviderRegistry& registry) {
+const Provider* SelectBestProviderForBbox(const BoundingBox& bbox,
+                                          std::optional<int> duration_hours,
+                                          const ProviderRegistry& registry) {
   const Provider& marine = registry.Get("marine_ie_irish_sea");
   if (marine.implemented && marine.SupportsBbox(bbox) &&
       (!duration_hours || !marine.max_duration_hours ||
@@ -147,12 +160,17 @@ const Provider& SelectCopernicusProvider(const std::string& provider_id,
     if (nws.implemented && nws.SupportsBbox(bbox)) return nws;
     const Provider& global = registry.Get("copernicus_global");
     if (global.implemented && global.SupportsBbox(bbox)) return global;
-    throw ValidationError("no implemented Copernicus provider supports the requested bbox");
+    throw ValidationError(
+        "no implemented Copernicus provider supports the requested bbox");
   }
   const Provider& provider = registry.Get(provider_id);
-  if (provider.id.rfind("copernicus_", 0) != 0) throw ValidationError(provider_id + " is not a Copernicus provider");
-  if (!provider.implemented) throw ValidationError(provider.label + " is not implemented");
-  if (!provider.SupportsBbox(bbox)) throw ValidationError(provider.label + " does not support the requested bbox");
+  if (provider.id.rfind("copernicus_", 0) != 0)
+    throw ValidationError(provider_id + " is not a Copernicus provider");
+  if (!provider.implemented)
+    throw ValidationError(provider.label + " is not implemented");
+  if (!provider.SupportsBbox(bbox))
+    throw ValidationError(provider.label +
+                          " does not support the requested bbox");
   return provider;
 }
 

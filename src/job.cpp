@@ -103,6 +103,8 @@ GeneratorJob ParseGeneratorJob(const Json::Value& value) {
   OptionalPath(request, "inputNetcdf", &job.request.input_netcdf);
   OptionalPath(request, "inputCache", &job.request.input_cache);
   OptionalPath(request, "offlineTidalFile", &job.request.offline_tidal_file);
+  job.request.offline_current_mode =
+      String(request, "offlineCurrentMode", "tide-only");
   OptionalPath(request, "tpxoModelDirectory",
                &job.request.tpxo_model_directory);
   job.request.auto_prepare_tpxo_cache =

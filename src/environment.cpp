@@ -19,15 +19,17 @@
 #include "environmental_grib/ukv.h"
 #include "environmental_grib/waves.h"
 #include "environmental_grib/xtd.h"
+#include "environmental_grib/xtd_package.h"
 
 namespace environmental_grib {
 namespace {
 
 class Workspace {
- public:
+public:
   explicit Workspace(const std::filesystem::path& output, bool keep)
       : keep_(keep) {
-    path_ = output.parent_path().empty() ? std::filesystem::current_path() : output.parent_path();
+    path_ = output.parent_path().empty() ? std::filesystem::current_path()
+                                         : output.parent_path();
     path_ /= ".environmental-grib-" + std::to_string(::getpid());
     std::filesystem::create_directories(path_);
   }
@@ -37,8 +39,11 @@ class Workspace {
       std::filesystem::remove_all(path_, ignored);
     }
   }
-  std::filesystem::path File(const std::string& name) const { return path_ / name; }
- private:
+  std::filesystem::path File(const std::string& name) const {
+    return path_ / name;
+  }
+
+private:
   std::filesystem::path path_;
   bool keep_{};
 };
@@ -58,7 +63,8 @@ std::string FingerprintHash(const std::string& value) {
 
 Json::Value ReadJson(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
-  if (!input) throw ValidationError("cannot open resume metadata: " + path.string());
+  if (!input)
+    throw ValidationError("cannot open resume metadata: " + path.string());
   Json::CharReaderBuilder builder;
   Json::Value value;
   std::string errors;
@@ -92,7 +98,7 @@ void WriteJsonAtomic(const std::filesystem::path& path,
 }
 
 class ResumeCache {
- public:
+public:
   ResumeCache(const std::filesystem::path& output, ProgressCallback progress)
       : progress_(std::move(progress)) {
     root_ = output.parent_path().empty() ? std::filesystem::current_path()
@@ -115,14 +121,13 @@ class ResumeCache {
       RemoveFiles(data, metadata);
       return std::nullopt;
     }
-    if (!have_data)
-      return std::nullopt;
+    if (!have_data) return std::nullopt;
     try {
       const auto value = ReadJson(metadata);
       const auto created = value["createdEpochSeconds"].asInt64();
-      const auto age = std::chrono::system_clock::now() -
-                       std::chrono::system_clock::time_point{
-                           std::chrono::seconds(created)};
+      const auto age =
+          std::chrono::system_clock::now() -
+          std::chrono::system_clock::time_point{std::chrono::seconds(created)};
       if (value["schemaVersion"].asInt() != 1 ||
           value["stage"].asString() != stage ||
           value["fingerprint"].asString() != fingerprint ||
@@ -143,7 +148,8 @@ class ResumeCache {
       details["stage"] = stage;
       details["messageCount"] = Json::UInt64(scan.message_count);
       details["byteCount"] = Json::UInt64(scan.byte_count);
-      details["detail"] = "validated completed " + stage + " from prior failed job";
+      details["detail"] =
+          "validated completed " + stage + " from prior failed job";
       if (progress_) progress_("reusing completed " + stage, details);
       touched_.emplace_back(data, metadata);
       Restored result{target, std::nullopt};
@@ -174,10 +180,10 @@ class ResumeCache {
       value["schemaVersion"] = 1;
       value["stage"] = stage;
       value["fingerprint"] = fingerprint;
-      value["createdEpochSeconds"] = Json::Int64(
-          std::chrono::duration_cast<std::chrono::seconds>(
-              std::chrono::system_clock::now().time_since_epoch())
-              .count());
+      value["createdEpochSeconds"] =
+          Json::Int64(std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count());
       value["messageCount"] = Json::UInt64(scan.message_count);
       value["byteCount"] = Json::UInt64(scan.byte_count);
       if (selected_cycle) value["selectedCycle"] = *selected_cycle;
@@ -208,7 +214,7 @@ class ResumeCache {
     touched_.clear();
   }
 
- private:
+private:
   std::pair<std::filesystem::path, std::filesystem::path> Paths(
       const std::string& stage, const std::string& fingerprint) const {
     const auto base = stage + "-" + FingerprintHash(fingerprint);
@@ -229,11 +235,11 @@ class ResumeCache {
 
 std::string CommonFingerprint(const EnvironmentRequest& request) {
   std::ostringstream value;
-  value << std::setprecision(17) << request.bbox.west << ','
-        << request.bbox.south << ',' << request.bbox.east << ','
-        << request.bbox.north << '|' << FormatUtcDateTime(request.start) << '|'
-        << request.hours << '|'
-        << std::filesystem::absolute(request.output).lexically_normal().string();
+  value
+      << std::setprecision(17) << request.bbox.west << ',' << request.bbox.south
+      << ',' << request.bbox.east << ',' << request.bbox.north << '|'
+      << FormatUtcDateTime(request.start) << '|' << request.hours << '|'
+      << std::filesystem::absolute(request.output).lexically_normal().string();
   return value.str();
 }
 
@@ -268,23 +274,30 @@ std::string CurrentFingerprint(const EnvironmentRequest& request,
 
 std::filesystem::path CopyValidated(const std::filesystem::path& source,
                                     const std::filesystem::path& target) {
-  if (!std::filesystem::is_regular_file(source)) throw ValidationError("input GRIB not found: " + source.string());
+  if (!std::filesystem::is_regular_file(source))
+    throw ValidationError("input GRIB not found: " + source.string());
   ScanGribMessages(source);
-  std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::copy_file(source, target,
+                             std::filesystem::copy_options::overwrite_existing);
   return target;
 }
 
 void Report(const ProgressCallback& callback, const std::string& stage,
             const std::string& detail) {
   if (!callback) return;
-  Json::Value value; value["detail"] = detail; callback(stage, value);
+  Json::Value value;
+  value["detail"] = detail;
+  callback(stage, value);
 }
 
 std::string ResolveCurrentSource(const EnvironmentRequest& request) {
   if (request.current_source != "auto") return request.current_source;
   ProviderRegistry registry;
-  const auto* selected = SelectBestProviderForBbox(request.bbox, request.hours, registry);
-  if (!selected) throw ValidationError("no current provider supports the requested bbox/duration");
+  const auto* selected =
+      SelectBestProviderForBbox(request.bbox, request.hours, registry);
+  if (!selected)
+    throw ValidationError(
+        "no current provider supports the requested bbox/duration");
   return selected->id;
 }
 
@@ -296,10 +309,15 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                       ProgressCallback progress) {
   request.bbox.Validate();
   BuildTimeSequence(request.start, request.hours, request.step_hours);
-  if (request.output.empty()) throw ValidationError("environment output path is required");
-  if (std::filesystem::exists(request.output) && !request.overwrite) throw ValidationError("output already exists; enable overwrite to replace it");
-  if (request.weather_provider == "none" && request.current_source == "none" && !request.include_waves)
-    throw ValidationError("at least one weather, wave, or current source must be enabled");
+  if (request.output.empty())
+    throw ValidationError("environment output path is required");
+  if (std::filesystem::exists(request.output) && !request.overwrite)
+    throw ValidationError(
+        "output already exists; enable overwrite to replace it");
+  if (request.weather_provider == "none" && request.current_source == "none" &&
+      !request.include_waves)
+    throw ValidationError(
+        "at least one weather, wave, or current source must be enabled");
   const std::string current_source = ResolveCurrentSource(request);
   if (current_source == "tpxo-cache") {
     if (!request.input_cache)
@@ -331,12 +349,25 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       throw ValidationError(
           "offline-tidal current source requires offlineTidalFile");
     }
-    (void)XtdReader(*request.offline_tidal_file);
+    XtdPackageReader package(*request.offline_tidal_file);
+    const auto mode = ParseOfflineCurrentMode(request.offline_current_mode);
+    if (mode == OfflineCurrentMode::kTideAndExpectedSeasonalCirculation &&
+        !package.status().climatology_available) {
+      throw ValidationError(
+          "selected XTD package does not contain expected seasonal "
+          "circulation");
+    }
   }
   if (request.dry_run) {
-    return {request.output, 0, 0, request.weather_provider,
+    return {request.output,
+            0,
+            0,
+            request.weather_provider,
             request.include_waves ? request.wave_provider : "none",
-            current_source, std::nullopt, {}, Json::Value(Json::objectValue),
+            current_source,
+            std::nullopt,
+            {},
+            Json::Value(Json::objectValue),
             Json::Value(Json::objectValue)};
   }
   Workspace workspace(request.output, request.keep_intermediate);
@@ -346,8 +377,9 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   Json::Value diagnostics(Json::objectValue);
 
   const auto has_stream = [&](const std::string& label) {
-    return std::any_of(streams.begin(), streams.end(),
-                       [&](const auto& stream) { return stream.first == label; });
+    return std::any_of(streams.begin(), streams.end(), [&](const auto& stream) {
+      return stream.first == label;
+    });
   };
   const bool coupled_gfs = request.weather_provider == "gfs" &&
                            request.include_waves &&
@@ -364,8 +396,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       const auto coupled_wave_fingerprint =
           WaveFingerprint(request, cached_weather->selected_cycle);
       if (const auto cached_waves = resume.Restore(
-              "waves", coupled_wave_fingerprint,
-              workspace.File("waves.grb"))) {
+              "waves", coupled_wave_fingerprint, workspace.File("waves.grb"))) {
         streams.emplace_back("weather", cached_weather->path);
         streams.emplace_back("waves", cached_waves->path);
         selected_cycle = cached_weather->selected_cycle;
@@ -373,8 +404,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       }
     }
   } else if (cacheable_weather) {
-    if (const auto cached = resume.Restore(
-            "weather", weather_fingerprint, workspace.File("weather.grb"))) {
+    if (const auto cached = resume.Restore("weather", weather_fingerprint,
+                                           workspace.File("weather.grb"))) {
       streams.emplace_back("weather", cached->path);
       selected_cycle = cached->selected_cycle;
       restored_weather = true;
@@ -384,30 +415,51 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   if (restored_weather) {
     // The validated checkpoint is already in the workspace and stream list.
   } else if (request.weather_provider == "existing-file") {
-    if (!request.weather_file) throw ValidationError("existing weather provider requires weather-file");
-    streams.emplace_back("weather", CopyValidated(*request.weather_file, workspace.File("weather.grb")));
+    if (!request.weather_file)
+      throw ValidationError("existing weather provider requires weather-file");
+    streams.emplace_back(
+        "weather",
+        CopyValidated(*request.weather_file, workspace.File("weather.grb")));
   } else if (request.weather_provider == "gfs") {
     const auto weather_path = workspace.File("weather.grb");
     if (request.include_waves && request.wave_provider == "gfs_wave") {
-      GFSRequest probe{request.bbox, weather_path, request.hours, request.step_hours,
-                       request.cycle, request.date, true, 60.0, 8, false,
-                       request.weather_preset, false};
+      GFSRequest probe{request.bbox,
+                       weather_path,
+                       request.hours,
+                       request.step_hours,
+                       request.cycle,
+                       request.date,
+                       true,
+                       60.0,
+                       8,
+                       false,
+                       request.weather_preset,
+                       false};
       std::vector<std::string> errors;
       bool complete = false;
       for (const auto& candidate : GfsCycleCandidates(probe, now)) {
         try {
           GFSRequest atmosphere = probe;
-          atmosphere.cycle = candidate.cycle; atmosphere.date = candidate.date;
+          atmosphere.cycle = candidate.cycle;
+          atmosphere.date = candidate.date;
           const auto weather = GenerateGfs(
               atmosphere,
-              MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
-              now, progress);
-          GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
-                           request.wave_step_hours, candidate.cycle, candidate.date,
-                           true, 60.0, 1, false, "routing", true};
+              MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress), now,
+              progress);
+          GFSRequest waves{request.bbox,
+                           workspace.File("waves.grb"),
+                           request.hours,
+                           request.wave_step_hours,
+                           candidate.cycle,
+                           candidate.date,
+                           true,
+                           60.0,
+                           1,
+                           false,
+                           "routing",
+                           true};
           const auto wave = GenerateGfs(
-              waves,
-              MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
+              waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
               now, progress);
           streams.emplace_back("weather", weather.output);
           streams.emplace_back("waves", wave.output);
@@ -423,18 +475,27 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       }
       if (!complete) {
         std::ostringstream message;
-        message << "No common complete GFS atmosphere/wave cycle was available. Tried: ";
+        message << "No common complete GFS atmosphere/wave cycle was "
+                   "available. Tried: ";
         for (const auto& error : errors) message << error << "; ";
         throw ValidationError(message.str());
       }
     } else {
-      GFSRequest weather{request.bbox, weather_path, request.hours, request.step_hours,
-                         request.cycle, request.date, true, 60.0, 8, false,
-                         request.weather_preset, false};
+      GFSRequest weather{request.bbox,
+                         weather_path,
+                         request.hours,
+                         request.step_hours,
+                         request.cycle,
+                         request.date,
+                         true,
+                         60.0,
+                         8,
+                         false,
+                         request.weather_preset,
+                         false};
       const auto result = GenerateGfs(
-          weather,
-          MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress), now,
-          progress);
+          weather, MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
+          now, progress);
       streams.emplace_back("weather", result.output);
       selected_cycle = result.cycle.CycleTime();
     }
@@ -450,34 +511,52 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     ukv.preset = request.weather_preset;
     ukv.grid_spacing_deg = request.weather_grid_spacing_deg;
     const auto weather = GenerateUkv(
-        ukv,
-        MakeRetryingHttpGet(http_get, "Met Office UKV weather", progress),
+        ukv, MakeRetryingHttpGet(http_get, "Met Office UKV weather", progress),
         now, progress);
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
   } else if (request.weather_provider == "dwd_icon_eu" ||
              request.weather_provider == "noaa_hrrr") {
-    GFSRequest icon{request.bbox, workspace.File("weather.grb"), request.hours,
-                    request.step_hours, request.cycle, request.date, true, 90.0,
-                    8, false, request.weather_preset, false};
+    GFSRequest icon{request.bbox,
+                    workspace.File("weather.grb"),
+                    request.hours,
+                    request.step_hours,
+                    request.cycle,
+                    request.date,
+                    true,
+                    90.0,
+                    8,
+                    false,
+                    request.weather_preset,
+                    false};
     const std::string provider = request.weather_provider == "dwd_icon_eu"
                                      ? "DWD ICON-EU weather"
                                      : "NOAA HRRR weather";
-    const auto weather = request.weather_provider == "dwd_icon_eu"
-                             ? GenerateDwdIconEu(
-                                   icon, MakeRetryingHttpGet(http_get, provider, progress),
-                                   now, progress)
-                             : GenerateHrrr(
-                                   icon, MakeRetryingHttpGet(http_get, provider, progress),
-                                   MakeRetryingHttpGetRange({}, provider, progress),
-                                   now, progress);
+    const auto weather =
+        request.weather_provider == "dwd_icon_eu"
+            ? GenerateDwdIconEu(
+                  icon, MakeRetryingHttpGet(http_get, provider, progress), now,
+                  progress)
+            : GenerateHrrr(icon,
+                           MakeRetryingHttpGet(http_get, provider, progress),
+                           MakeRetryingHttpGetRange({}, provider, progress),
+                           now, progress);
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
   } else if (request.weather_provider == "ecmwf_ifs_open" ||
              request.weather_provider == "ecmwf_aifs_open") {
-    GFSRequest ecmwf{request.bbox, workspace.File("weather.grb"), request.hours,
-                     request.step_hours, request.cycle, request.date, true,
-                     180.0, 8, false, request.weather_preset, false};
+    GFSRequest ecmwf{request.bbox,
+                     workspace.File("weather.grb"),
+                     request.hours,
+                     request.step_hours,
+                     request.cycle,
+                     request.date,
+                     true,
+                     180.0,
+                     8,
+                     false,
+                     request.weather_preset,
+                     false};
     const std::string provider = request.weather_provider == "ecmwf_aifs_open"
                                      ? "ECMWF AIFS weather"
                                      : "ECMWF IFS weather";
@@ -488,7 +567,9 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
   } else if (request.weather_provider != "none") {
-    throw UnsupportedSourceError("native weather provider is not yet available: " + request.weather_provider);
+    throw UnsupportedSourceError(
+        "native weather provider is not yet available: " +
+        request.weather_provider);
   }
 
   if (cacheable_weather && !restored_weather && has_stream("weather")) {
@@ -506,8 +587,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   const std::string wave_fingerprint = WaveFingerprint(request, std::nullopt);
   bool restored_waves = false;
   if (cacheable_waves && !has_stream("waves")) {
-    if (const auto cached = resume.Restore(
-            "waves", wave_fingerprint, workspace.File("waves.grb"))) {
+    if (const auto cached = resume.Restore("waves", wave_fingerprint,
+                                           workspace.File("waves.grb"))) {
       streams.emplace_back("waves", cached->path);
       if (!selected_cycle) selected_cycle = cached->selected_cycle;
       restored_waves = true;
@@ -517,9 +598,18 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   std::optional<std::string> wave_cycle;
   if (request.include_waves && request.wave_provider == "gfs_wave" &&
       !has_stream("waves")) {
-    GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
-                     request.wave_step_hours, request.cycle, request.date, true,
-                     60.0, 8, false, "routing", true};
+    GFSRequest waves{request.bbox,
+                     workspace.File("waves.grb"),
+                     request.hours,
+                     request.wave_step_hours,
+                     request.cycle,
+                     request.date,
+                     true,
+                     60.0,
+                     8,
+                     false,
+                     "routing",
+                     true};
     if (request.weather_provider != "gfs") {
       waves.cycle = "auto";
       waves.date = std::nullopt;
@@ -557,17 +647,16 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                 wave_cycle);
   }
 
-  const bool cacheable_current =
-      current_source == "marine_ie_irish_sea" ||
-      current_source == "copernicus_nws" ||
-      current_source == "copernicus_global" ||
-      current_source == "noaa_rtofs_global";
+  const bool cacheable_current = current_source == "marine_ie_irish_sea" ||
+                                 current_source == "copernicus_nws" ||
+                                 current_source == "copernicus_global" ||
+                                 current_source == "noaa_rtofs_global";
   const std::string current_fingerprint =
       CurrentFingerprint(request, current_source);
   bool restored_current = false;
   if (cacheable_current) {
-    if (const auto cached = resume.Restore(
-            "current", current_fingerprint, workspace.File("current.grb"))) {
+    if (const auto cached = resume.Restore("current", current_fingerprint,
+                                           workspace.File("current.grb"))) {
       streams.emplace_back("current", cached->path);
       restored_current = true;
     }
@@ -576,17 +665,19 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   if (restored_current) {
     // The validated checkpoint is already in the workspace and stream list.
   } else if (current_source == "existing-file") {
-    if (!request.current_file) throw ValidationError("existing current source requires current-file");
-    streams.emplace_back("current", CopyValidated(*request.current_file, workspace.File("current.grb")));
+    if (!request.current_file)
+      throw ValidationError("existing current source requires current-file");
+    streams.emplace_back(
+        "current",
+        CopyValidated(*request.current_file, workspace.File("current.grb")));
   } else if (current_source == "marine_ie_irish_sea") {
     Report(progress, "downloading current", current_source);
     streams.emplace_back(
-        "current",
-        DownloadMarineIe(
-            workspace.File("current.grb"), true,
-            BinaryDownload(MakeRetryingHttpGet(
-                http_get, "Marine.ie Irish Sea current", progress)))
-            .output);
+        "current", DownloadMarineIe(
+                       workspace.File("current.grb"), true,
+                       BinaryDownload(MakeRetryingHttpGet(
+                           http_get, "Marine.ie Irish Sea current", progress)))
+                       .output);
   } else if (current_source == "copernicus_nws" ||
              current_source == "copernicus_global") {
     CopernicusRequest current;
@@ -605,13 +696,11 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                      : "Copernicus NWS current";
     Report(progress, "authenticating " + provider,
            "validating Copernicus Marine credentials");
-    const auto download = BinaryDownload(
-        MakeRetryingHttpGet(http_get, provider, progress));
+    const auto download =
+        BinaryDownload(MakeRetryingHttpGet(http_get, provider, progress));
     const auto generated = current_source == "copernicus_global"
-                               ? GenerateCopernicusGlobal(
-                                     current, download)
-                               : GenerateCopernicusNws(
-                                     current, download);
+                               ? GenerateCopernicusGlobal(current, download)
+                               : GenerateCopernicusNws(current, download);
     streams.emplace_back("current", generated.output);
   } else if (current_source == "noaa_rtofs_global") {
     RtofsRequest current;
@@ -627,19 +716,21 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     current.grid_spacing_deg = request.current_grid_spacing_deg;
     current.overwrite = true;
     streams.emplace_back(
-        "current",
-        GenerateRtofs(
-            current, {},
-            BinaryDownload(MakeRetryingHttpGet(
-                http_get, "NOAA RTOFS current", progress)))
-            .output);
+        "current", GenerateRtofs(current, {},
+                                 BinaryDownload(MakeRetryingHttpGet(
+                                     http_get, "NOAA RTOFS current", progress)))
+                       .output);
   } else if (current_source == "netcdf") {
-    if (!request.input_netcdf) throw ValidationError("netcdf current source requires input-netcdf");
-    const auto grid = BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
-    const auto times = BuildTimeSequence(request.start, request.hours, request.step_hours);
+    if (!request.input_netcdf)
+      throw ValidationError("netcdf current source requires input-netcdf");
+    const auto grid =
+        BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
+    const auto times =
+        BuildTimeSequence(request.start, request.hours, request.step_hours);
     NetCDFCurrentSource source(*request.input_netcdf);
     std::vector<CurrentGrid> fields;
-    for (const auto time : times) fields.push_back(source.GetCurrentGrid(request.bbox, time, grid));
+    for (const auto time : times)
+      fields.push_back(source.GetCurrentGrid(request.bbox, time, grid));
     const auto path = workspace.File("current.grb");
     WriteGrib1Currents(fields, path);
     streams.emplace_back("current", path);
@@ -662,43 +753,48 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       }
       Report(progress, "preparing TPXO cache", request.input_cache->string());
       PrepareTpxo10Cache(*request.tpxo_model_directory, request.bbox,
-                         request.current_grid_spacing_deg,
-                         *request.input_cache, true);
+                         request.current_grid_spacing_deg, *request.input_cache,
+                         true);
     }
     streams.emplace_back(
-        "current",
-        GenerateFromTpxoCache(*request.input_cache, request.start,
-                              request.hours, request.step_hours,
-                              workspace.File("current.grb"),
-                              request.infer_minor_tides, true)
-            .output);
+        "current", GenerateFromTpxoCache(*request.input_cache, request.start,
+                                         request.hours, request.step_hours,
+                                         workspace.File("current.grb"),
+                                         request.infer_minor_tides, true)
+                       .output);
   } else if (current_source == "tpxo") {
     if (!request.tpxo_model_directory)
       throw ValidationError("tpxo current source requires model-dir");
-    TpxoModelRequest current{request.bbox, request.start, request.hours,
+    TpxoModelRequest current{request.bbox,
+                             request.start,
+                             request.hours,
                              request.step_hours,
                              request.current_grid_spacing_deg,
                              *request.tpxo_model_directory,
                              workspace.File("current.grb"),
-                             request.infer_minor_tides, true};
-    streams.emplace_back("current",GenerateFromTpxo10AtlasModel(current).output);
+                             request.infer_minor_tides,
+                             true};
+    streams.emplace_back("current",
+                         GenerateFromTpxo10AtlasModel(current).output);
   } else if (current_source == "offline-tidal") {
     if (!request.offline_tidal_file) {
       throw ValidationError(
           "offline-tidal current source requires offlineTidalFile");
     }
-    Report(progress, "loading Offline Tidal package",
+    Report(progress, "loading Offline current package",
            request.offline_tidal_file->string());
     const auto grid =
         BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
     const auto times =
         BuildTimeSequence(request.start, request.hours, request.step_hours);
-    XtdReader reader(*request.offline_tidal_file);
-    auto cache = reader.LoadRegion(grid);
-    Report(progress, "calculating Offline Tidal currents",
+    XtdPackageReader reader(*request.offline_tidal_file);
+    const auto offline_mode =
+        ParseOfflineCurrentMode(request.offline_current_mode);
+    Report(progress, "calculating offline currents",
            std::to_string(times.size()) + " timestamps");
     const auto prediction_started = std::chrono::steady_clock::now();
-    auto fields = PredictTpxoCache(cache, times, request.infer_minor_tides);
+    auto fields =
+        reader.Predict(grid, times, offline_mode, request.infer_minor_tides);
     const double prediction_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - prediction_started)
@@ -711,47 +807,90 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     diagnostics["offline_tidal"]["package"] =
         request.offline_tidal_file->string();
     diagnostics["offline_tidal"]["tiles_loaded"] =
-        Json::UInt64(stats.tiles_loaded);
+        Json::UInt64(stats.tide.tiles_loaded + stats.residual.tiles_loaded);
+    diagnostics["offline_tidal"]["tide_tiles_loaded"] =
+        Json::UInt64(stats.tide.tiles_loaded);
+    diagnostics["offline_tidal"]["residual_tiles_loaded"] =
+        Json::UInt64(stats.residual.tiles_loaded);
+    diagnostics["offline_tidal"]["uncertainty_tiles_loaded"] =
+        Json::UInt64(stats.uncertainty.tiles_loaded);
     diagnostics["offline_tidal"]["cache_hits"] =
-        Json::UInt64(stats.cache_hits);
-    diagnostics["offline_tidal"]["encrypted_bytes"] =
-        Json::UInt64(stats.encrypted_bytes);
-    diagnostics["offline_tidal"]["compressed_bytes"] =
-        Json::UInt64(stats.compressed_bytes);
-    diagnostics["offline_tidal"]["decompressed_bytes"] =
-        Json::UInt64(stats.decompressed_bytes);
-    diagnostics["offline_tidal"]["peak_cache_bytes"] =
-        Json::UInt64(stats.peak_cache_bytes);
-    diagnostics["offline_tidal"]["tile_load_ms"] = stats.load_ms;
+        Json::UInt64(stats.tide.cache_hits + stats.residual.cache_hits);
+    diagnostics["offline_tidal"]["encrypted_bytes"] = Json::UInt64(
+        stats.tide.encrypted_bytes + stats.residual.encrypted_bytes);
+    diagnostics["offline_tidal"]["compressed_bytes"] = Json::UInt64(
+        stats.tide.compressed_bytes + stats.residual.compressed_bytes);
+    diagnostics["offline_tidal"]["decompressed_bytes"] = Json::UInt64(
+        stats.tide.decompressed_bytes + stats.residual.decompressed_bytes);
+    diagnostics["offline_tidal"]["peak_cache_bytes"] = Json::UInt64(
+        stats.tide.peak_cache_bytes + stats.residual.peak_cache_bytes);
+    diagnostics["offline_tidal"]["tile_load_ms"] =
+        stats.tide.load_ms + stats.residual.load_ms;
     diagnostics["offline_tidal"]["interpolation_ms"] =
-        stats.interpolation_ms;
+        stats.tide.interpolation_ms + stats.residual.interpolation_ms;
     diagnostics["offline_tidal"]["package_validation_ms"] =
         reader.status().validation_ms;
+    diagnostics["offline_tidal"]["package_bytes_read"] =
+        Json::UInt64(stats.outer_bytes_read);
     diagnostics["offline_tidal"]["harmonic_evaluation_ms"] = prediction_ms;
+    diagnostics["offline_tidal"]["format_version"] =
+        reader.status().format_version;
+    diagnostics["offline_tidal"]["mode"] = OfflineCurrentModeId(offline_mode);
+    diagnostics["offline_tidal"]["source_description"] =
+        offline_mode == OfflineCurrentMode::kAstronomicalTideOnly
+            ? "deterministic astronomical tide"
+            : "deterministic tide plus expected seasonal circulation; not a "
+              "forecast";
+    diagnostics["offline_tidal"]["parent_package_hash"] =
+        reader.status().parent_package_hash;
+    diagnostics["offline_tidal"]["package_id"] = reader.status().package_id;
+    diagnostics["offline_tidal"]["package_hash"] = reader.status().package_hash;
+    diagnostics["offline_tidal"]["residual_representation"] =
+        reader.status().residual_representation;
+    if (reader.status().metadata.isMember("uncertainty_summary")) {
+      diagnostics["offline_tidal"]["uncertainty_summary"] =
+          reader.status().metadata["uncertainty_summary"];
+    }
   } else if (current_source == "synthetic") {
-    const auto grid = BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
+    const auto grid =
+        BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
     std::vector<CurrentGrid> fields;
-    for (const auto time : BuildTimeSequence(request.start, request.hours, request.step_hours)) fields.push_back(MakeSyntheticRotaryCurrent(request.bbox, time, grid));
+    for (const auto time :
+         BuildTimeSequence(request.start, request.hours, request.step_hours))
+      fields.push_back(MakeSyntheticRotaryCurrent(request.bbox, time, grid));
     const auto path = workspace.File("current.grb");
     WriteGrib1Currents(fields, path);
     streams.emplace_back("current", path);
   } else if (current_source != "none") {
-    throw UnsupportedSourceError("native current provider is not yet available: " + current_source);
+    throw UnsupportedSourceError(
+        "native current provider is not yet available: " + current_source);
   }
 
   if (cacheable_current && !restored_current && has_stream("current")) {
     resume.Save("current", current_fingerprint, workspace.File("current.grb"));
   }
 
-  if (streams.empty()) throw ValidationError("generation produced no environmental streams");
-  Report(progress, "merging environmental GRIB", std::to_string(streams.size()) + " streams");
-  const auto merged = MergeGribStreams(streams, request.output, request.overwrite);
+  if (streams.empty())
+    throw ValidationError("generation produced no environmental streams");
+  Report(progress, "merging environmental GRIB",
+         std::to_string(streams.size()) + " streams");
+  const auto merged =
+      MergeGribStreams(streams, request.output, request.overwrite);
   std::vector<std::filesystem::path> input_paths;
-  for (const auto& [label, path] : streams) { (void)label; input_paths.push_back(path); }
+  for (const auto& [label, path] : streams) {
+    (void)label;
+    input_paths.push_back(path);
+  }
   resume.Complete();
-  return {request.output, merged.output_message_count, merged.byte_count,
-          request.weather_provider, request.include_waves ? request.wave_provider : "none",
-          current_source, selected_cycle, input_paths, merged.inspection,
+  return {request.output,
+          merged.output_message_count,
+          merged.byte_count,
+          request.weather_provider,
+          request.include_waves ? request.wave_provider : "none",
+          current_source,
+          selected_cycle,
+          input_paths,
+          merged.inspection,
           diagnostics};
 }
 

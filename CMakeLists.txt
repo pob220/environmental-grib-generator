@@ -27,6 +27,7 @@ add_library(environmental_grib_engine STATIC
   src/model.cpp
   src/netcdf.cpp
   src/providers.cpp
+  src/random_access.cpp
   src/remote_currents.cpp
   src/rtofs.cpp
   src/security.cpp
@@ -37,6 +38,7 @@ add_library(environmental_grib_engine STATIC
   src/weather.cpp
   src/waves.cpp
   src/xtd.cpp
+  src/xtd_package.cpp
 )
 target_compile_features(environmental_grib_engine PUBLIC cxx_std_20)
 target_include_directories(environmental_grib_engine

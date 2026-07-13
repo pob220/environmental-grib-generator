@@ -37,15 +37,32 @@ struct XtdFixtureOptions {
   std::function<double(std::size_t constituent, std::size_t component,
                        std::uint32_t x, std::uint32_t y)>
       value;
-  std::function<bool(bool u_component, std::uint32_t x, std::uint32_t y)>
-      valid;
+  std::function<bool(bool u_component, std::uint32_t x, std::uint32_t y)> valid;
+};
+
+enum class XtdV2ResidualRepresentation {
+  kHarmonic2,
+  kMonthly12,
+};
+
+struct XtdV2FixtureOptions {
+  XtdFixtureOptions tide;
+  XtdV2ResidualRepresentation representation{
+      XtdV2ResidualRepresentation::kHarmonic2};
+  std::uint32_t tile_width{2};
+  std::uint32_t tile_height{2};
+  float quantization_scale{0.001F};
+  std::function<double(std::size_t field, std::uint32_t x, std::uint32_t y)>
+      residual_value;
+  std::function<bool(std::uint32_t x, std::uint32_t y)> valid;
 };
 
 void WriteXtdFixture(const std::filesystem::path& path,
                      const XtdFixtureOptions& options = {});
+void WriteXtdV2Fixture(const std::filesystem::path& path,
+                       const XtdV2FixtureOptions& options = {});
 void CorruptXtdFixtureByte(const std::filesystem::path& path,
-                           std::uint64_t offset,
-                           unsigned char xor_mask = 1);
+                           std::uint64_t offset, unsigned char xor_mask = 1);
 void TruncateXtdFixture(const std::filesystem::path& path,
                         std::uint64_t length);
 

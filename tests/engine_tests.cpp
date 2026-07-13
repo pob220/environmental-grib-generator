@@ -55,10 +55,12 @@ bool Near(double first, double second, double tolerance = 1e-10) {
 }
 
 void Nc(int status, const std::string& action) {
-  if (status != NC_NOERR) throw std::runtime_error(action + ": " + nc_strerror(status));
+  if (status != NC_NOERR)
+    throw std::runtime_error(action + ": " + nc_strerror(status));
 }
 
-void WriteNetCDFFixture(const std::filesystem::path& path, const std::string& units) {
+void WriteNetCDFFixture(const std::filesystem::path& path,
+                        const std::string& units) {
   int file = -1;
   Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create fixture");
   int time_dim = -1, lat_dim = -1, lon_dim = -1;
@@ -66,16 +68,27 @@ void WriteNetCDFFixture(const std::filesystem::path& path, const std::string& un
   Nc(nc_def_dim(file, "latitude", 3, &lat_dim), "latitude dimension");
   Nc(nc_def_dim(file, "longitude", 3, &lon_dim), "longitude dimension");
   int time_var = -1, lat_var = -1, lon_var = -1, u_var = -1, v_var = -1;
-  Nc(nc_def_var(file, "time", NC_DOUBLE, 1, &time_dim, &time_var), "time variable");
-  Nc(nc_def_var(file, "latitude", NC_DOUBLE, 1, &lat_dim, &lat_var), "latitude variable");
-  Nc(nc_def_var(file, "longitude", NC_DOUBLE, 1, &lon_dim, &lon_var), "longitude variable");
+  Nc(nc_def_var(file, "time", NC_DOUBLE, 1, &time_dim, &time_var),
+     "time variable");
+  Nc(nc_def_var(file, "latitude", NC_DOUBLE, 1, &lat_dim, &lat_var),
+     "latitude variable");
+  Nc(nc_def_var(file, "longitude", NC_DOUBLE, 1, &lon_dim, &lon_var),
+     "longitude variable");
   const int dims[] = {time_dim, lat_dim, lon_dim};
-  Nc(nc_def_var(file, "eastward_sea_water_velocity", NC_DOUBLE, 3, dims, &u_var), "u variable");
-  Nc(nc_def_var(file, "northward_sea_water_velocity", NC_DOUBLE, 3, dims, &v_var), "v variable");
+  Nc(nc_def_var(file, "eastward_sea_water_velocity", NC_DOUBLE, 3, dims,
+                &u_var),
+     "u variable");
+  Nc(nc_def_var(file, "northward_sea_water_velocity", NC_DOUBLE, 3, dims,
+                &v_var),
+     "v variable");
   const std::string time_units = "hours since 2026-07-01 00:00:00";
-  Nc(nc_put_att_text(file, time_var, "units", time_units.size(), time_units.c_str()), "time units");
-  Nc(nc_put_att_text(file, u_var, "units", units.size(), units.c_str()), "u units");
-  Nc(nc_put_att_text(file, v_var, "units", units.size(), units.c_str()), "v units");
+  Nc(nc_put_att_text(file, time_var, "units", time_units.size(),
+                     time_units.c_str()),
+     "time units");
+  Nc(nc_put_att_text(file, u_var, "units", units.size(), units.c_str()),
+     "u units");
+  Nc(nc_put_att_text(file, v_var, "units", units.size(), units.c_str()),
+     "v units");
   Nc(nc_enddef(file), "end definitions");
   const double times[] = {0.0, 1.0};
   const double latitudes[] = {51.5, 52.0, 52.5};
@@ -89,16 +102,15 @@ void WriteNetCDFFixture(const std::filesystem::path& path, const std::string& un
   Nc(nc_close(file), "close fixture");
 }
 
-void WriteTpxoModelFixture(
-    const std::filesystem::path& root,
-    const std::array<double, 3>& longitude_axis = {-1.0, -0.5, 0.0}) {
+void WriteTpxoModelFixture(const std::filesystem::path& root,
+                           const std::array<double, 3>& longitude_axis = {
+                               -1.0, -0.5, 0.0}) {
   std::filesystem::create_directories(root);
   const std::array<double, 3> latitude_axis{-1.0, -0.5, 0.0};
   const double depth[] = {100.0, 100.0, 100.0, 100.0, 100.0,
                           100.0, 100.0, 100.0, 100.0};
   int file = -1, x = -1, y = -1;
-  Nc(nc_create((root / "grid_tpxo10atlas_v2.nc").c_str(), NC_CLOBBER,
-               &file),
+  Nc(nc_create((root / "grid_tpxo10atlas_v2.nc").c_str(), NC_CLOBBER, &file),
      "create TPXO grid fixture");
   Nc(nc_def_dim(file, "nx", 3, &x), "TPXO grid x dimension");
   Nc(nc_def_dim(file, "ny", 3, &y), "TPXO grid y dimension");
@@ -116,9 +128,11 @@ void WriteTpxoModelFixture(
   Nc(nc_put_att_text(file, hv, "units", metres.size(), metres.c_str()),
      "TPXO hv units");
   Nc(nc_enddef(file), "finish TPXO grid definitions");
-  Nc(nc_put_var_double(file, lon_u, longitude_axis.data()), "TPXO lon u values");
+  Nc(nc_put_var_double(file, lon_u, longitude_axis.data()),
+     "TPXO lon u values");
   Nc(nc_put_var_double(file, lat_u, latitude_axis.data()), "TPXO lat u values");
-  Nc(nc_put_var_double(file, lon_v, longitude_axis.data()), "TPXO lon v values");
+  Nc(nc_put_var_double(file, lon_v, longitude_axis.data()),
+     "TPXO lon v values");
   Nc(nc_put_var_double(file, lat_v, latitude_axis.data()), "TPXO lat v values");
   Nc(nc_put_var_double(file, hu, depth), "TPXO hu values");
   Nc(nc_put_var_double(file, hv, depth), "TPXO hv values");
@@ -153,10 +167,14 @@ void WriteTpxoModelFixture(
   const std::vector<double> v_values(9, 50000.0);
   const std::vector<double> zero_values(9, 0.0);
   Nc(nc_put_var_text(file, con, constituent), "TPXO constituent value");
-  Nc(nc_put_var_double(file, lon_u, longitude_axis.data()), "TPXO model lon u values");
-  Nc(nc_put_var_double(file, lat_u, latitude_axis.data()), "TPXO model lat u values");
-  Nc(nc_put_var_double(file, lon_v, longitude_axis.data()), "TPXO model lon v values");
-  Nc(nc_put_var_double(file, lat_v, latitude_axis.data()), "TPXO model lat v values");
+  Nc(nc_put_var_double(file, lon_u, longitude_axis.data()),
+     "TPXO model lon u values");
+  Nc(nc_put_var_double(file, lat_u, latitude_axis.data()),
+     "TPXO model lat u values");
+  Nc(nc_put_var_double(file, lon_v, longitude_axis.data()),
+     "TPXO model lon v values");
+  Nc(nc_put_var_double(file, lat_v, latitude_axis.data()),
+     "TPXO model lat v values");
   Nc(nc_put_var_double(file, u_real, u_values.data()), "TPXO u real values");
   Nc(nc_put_var_double(file, u_imag, zero_values.data()), "TPXO u imag values");
   Nc(nc_put_var_double(file, v_real, v_values.data()), "TPXO v real values");
@@ -172,22 +190,32 @@ void WriteWaveFixture(const std::filesystem::path& path) {
   Nc(nc_def_dim(file, "latitude", 3, &lat_dim), "wave latitude dimension");
   Nc(nc_def_dim(file, "longitude", 3, &lon_dim), "wave longitude dimension");
   int time_var = -1, lat_var = -1, lon_var = -1;
-  Nc(nc_def_var(file, "time", NC_DOUBLE, 1, &time_dim, &time_var), "wave time variable");
-  Nc(nc_def_var(file, "latitude", NC_DOUBLE, 1, &lat_dim, &lat_var), "wave latitude variable");
-  Nc(nc_def_var(file, "longitude", NC_DOUBLE, 1, &lon_dim, &lon_var), "wave longitude variable");
+  Nc(nc_def_var(file, "time", NC_DOUBLE, 1, &time_dim, &time_var),
+     "wave time variable");
+  Nc(nc_def_var(file, "latitude", NC_DOUBLE, 1, &lat_dim, &lat_var),
+     "wave latitude variable");
+  Nc(nc_def_var(file, "longitude", NC_DOUBLE, 1, &lon_dim, &lon_var),
+     "wave longitude variable");
   const int dims[] = {time_dim, lat_dim, lon_dim};
   int height = -1, period = -1, direction = -1;
   Nc(nc_def_var(file, "VHM0", NC_DOUBLE, 3, dims, &height), "wave height");
   Nc(nc_def_var(file, "VTPK", NC_DOUBLE, 3, dims, &period), "wave period");
-  Nc(nc_def_var(file, "VMDR", NC_DOUBLE, 3, dims, &direction), "wave direction");
+  Nc(nc_def_var(file, "VMDR", NC_DOUBLE, 3, dims, &direction),
+     "wave direction");
   const std::string time_units = "hours since 2026-07-01 00:00:00";
-  Nc(nc_put_att_text(file, time_var, "units", time_units.size(), time_units.c_str()), "wave time units");
+  Nc(nc_put_att_text(file, time_var, "units", time_units.size(),
+                     time_units.c_str()),
+     "wave time units");
   const std::string metres = "m", seconds = "s", degrees = "degrees";
-  Nc(nc_put_att_text(file, height, "units", metres.size(), metres.c_str()), "height units");
-  Nc(nc_put_att_text(file, period, "units", seconds.size(), seconds.c_str()), "period units");
-  Nc(nc_put_att_text(file, direction, "units", degrees.size(), degrees.c_str()), "direction units");
+  Nc(nc_put_att_text(file, height, "units", metres.size(), metres.c_str()),
+     "height units");
+  Nc(nc_put_att_text(file, period, "units", seconds.size(), seconds.c_str()),
+     "period units");
+  Nc(nc_put_att_text(file, direction, "units", degrees.size(), degrees.c_str()),
+     "direction units");
   Nc(nc_enddef(file), "end wave definitions");
-  const double times[] = {0.0, 3.0}, lats[] = {51.5, 52.0, 52.5}, lons[] = {-7.0, -6.5, -6.0};
+  const double times[] = {0.0, 3.0}, lats[] = {51.5, 52.0, 52.5},
+               lons[] = {-7.0, -6.5, -6.0};
   std::vector<double> heights(18, 2.0), periods(18, 8.0), directions(18, 270.0);
   Nc(nc_put_var_double(file, time_var, times), "wave times");
   Nc(nc_put_var_double(file, lat_var, lats), "wave lats");
@@ -209,16 +237,22 @@ void WriteRtofsFixture(const std::filesystem::path& path) {
   const int coordinate_dims[] = {y, x};
   const int field_dims[] = {mt, depth, y, x};
   int latitude = -1, longitude = -1, u = -1, v = -1;
-  Nc(nc_def_var(file, "Latitude", NC_DOUBLE, 2, coordinate_dims, &latitude), "RTOFS latitude");
-  Nc(nc_def_var(file, "Longitude", NC_DOUBLE, 2, coordinate_dims, &longitude), "RTOFS longitude");
+  Nc(nc_def_var(file, "Latitude", NC_DOUBLE, 2, coordinate_dims, &latitude),
+     "RTOFS latitude");
+  Nc(nc_def_var(file, "Longitude", NC_DOUBLE, 2, coordinate_dims, &longitude),
+     "RTOFS longitude");
   Nc(nc_def_var(file, "u", NC_DOUBLE, 4, field_dims, &u), "RTOFS u");
   Nc(nc_def_var(file, "v", NC_DOUBLE, 4, field_dims, &v), "RTOFS v");
   const std::string units = "m/s";
-  Nc(nc_put_att_text(file, u, "units", units.size(), units.c_str()), "RTOFS u units");
-  Nc(nc_put_att_text(file, v, "units", units.size(), units.c_str()), "RTOFS v units");
+  Nc(nc_put_att_text(file, u, "units", units.size(), units.c_str()),
+     "RTOFS u units");
+  Nc(nc_put_att_text(file, v, "units", units.size(), units.c_str()),
+     "RTOFS v units");
   Nc(nc_enddef(file), "end RTOFS definitions");
-  const double latitudes[] = {30.0, 30.0, 30.0, 30.5, 30.55, 30.5, 31.0, 31.0, 31.0};
-  const double longitudes[] = {-80.0, -79.5, -79.0, -80.0, -79.48, -79.0, -80.0, -79.5, -79.0};
+  const double latitudes[] = {30.0, 30.0, 30.0, 30.5, 30.55,
+                              30.5, 31.0, 31.0, 31.0};
+  const double longitudes[] = {-80.0, -79.5, -79.0, -80.0, -79.48,
+                               -79.0, -80.0, -79.5, -79.0};
   std::vector<double> us(9), vs(9);
   for (std::size_t i = 0; i < us.size(); ++i) {
     us[i] = longitudes[i] * 0.01 + latitudes[i] * 0.02;
@@ -233,34 +267,62 @@ void WriteRtofsFixture(const std::filesystem::path& path) {
 
 void WriteUkvFixture(const std::filesystem::path& path,
                      const std::string& variable_name,
-                     const std::string& standard_name,
-                     const std::string& units, double value) {
+                     const std::string& standard_name, const std::string& units,
+                     double value) {
   int file = -1;
   Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create UKV fixture");
   int y_dim = -1, x_dim = -1;
   Nc(nc_def_dim(file, "projection_y_coordinate", 5, &y_dim), "UKV y dimension");
   Nc(nc_def_dim(file, "projection_x_coordinate", 5, &x_dim), "UKV x dimension");
   int y_var = -1, x_var = -1, mapping = -1, data = -1;
-  Nc(nc_def_var(file, "projection_y_coordinate", NC_DOUBLE, 1, &y_dim, &y_var), "UKV y");
-  Nc(nc_def_var(file, "projection_x_coordinate", NC_DOUBLE, 1, &x_dim, &x_var), "UKV x");
+  Nc(nc_def_var(file, "projection_y_coordinate", NC_DOUBLE, 1, &y_dim, &y_var),
+     "UKV y");
+  Nc(nc_def_var(file, "projection_x_coordinate", NC_DOUBLE, 1, &x_dim, &x_var),
+     "UKV x");
   const int dims[] = {y_dim, x_dim};
-  Nc(nc_def_var(file, "lambert_azimuthal_equal_area", NC_INT, 0, nullptr, &mapping), "UKV mapping");
-  Nc(nc_def_var(file, variable_name.c_str(), NC_DOUBLE, 2, dims, &data), "UKV field");
-  const std::string x_standard = "projection_x_coordinate", y_standard = "projection_y_coordinate";
-  Nc(nc_put_att_text(file, x_var, "standard_name", x_standard.size(), x_standard.c_str()), "UKV x standard name");
-  Nc(nc_put_att_text(file, y_var, "standard_name", y_standard.size(), y_standard.c_str()), "UKV y standard name");
+  Nc(nc_def_var(file, "lambert_azimuthal_equal_area", NC_INT, 0, nullptr,
+                &mapping),
+     "UKV mapping");
+  Nc(nc_def_var(file, variable_name.c_str(), NC_DOUBLE, 2, dims, &data),
+     "UKV field");
+  const std::string x_standard = "projection_x_coordinate",
+                    y_standard = "projection_y_coordinate";
+  Nc(nc_put_att_text(file, x_var, "standard_name", x_standard.size(),
+                     x_standard.c_str()),
+     "UKV x standard name");
+  Nc(nc_put_att_text(file, y_var, "standard_name", y_standard.size(),
+                     y_standard.c_str()),
+     "UKV y standard name");
   const std::string mapping_name = "lambert_azimuthal_equal_area";
-  Nc(nc_put_att_text(file, mapping, "grid_mapping_name", mapping_name.size(), mapping_name.c_str()), "UKV mapping name");
-  const double lat0 = 54.9, lon0 = -2.5, zero = 0.0, semi_major = 6378137.0, inverse_flattening = 298.257223563;
-  Nc(nc_put_att_double(file, mapping, "latitude_of_projection_origin", NC_DOUBLE, 1, &lat0), "UKV lat0");
-  Nc(nc_put_att_double(file, mapping, "longitude_of_projection_origin", NC_DOUBLE, 1, &lon0), "UKV lon0");
-  Nc(nc_put_att_double(file, mapping, "false_easting", NC_DOUBLE, 1, &zero), "UKV false easting");
-  Nc(nc_put_att_double(file, mapping, "false_northing", NC_DOUBLE, 1, &zero), "UKV false northing");
-  Nc(nc_put_att_double(file, mapping, "semi_major_axis", NC_DOUBLE, 1, &semi_major), "UKV semi major");
-  Nc(nc_put_att_double(file, mapping, "inverse_flattening", NC_DOUBLE, 1, &inverse_flattening), "UKV inverse flattening");
-  Nc(nc_put_att_text(file, data, "grid_mapping", mapping_name.size(), mapping_name.c_str()), "UKV field mapping");
-  Nc(nc_put_att_text(file, data, "standard_name", standard_name.size(), standard_name.c_str()), "UKV standard name");
-  Nc(nc_put_att_text(file, data, "units", units.size(), units.c_str()), "UKV units");
+  Nc(nc_put_att_text(file, mapping, "grid_mapping_name", mapping_name.size(),
+                     mapping_name.c_str()),
+     "UKV mapping name");
+  const double lat0 = 54.9, lon0 = -2.5, zero = 0.0, semi_major = 6378137.0,
+               inverse_flattening = 298.257223563;
+  Nc(nc_put_att_double(file, mapping, "latitude_of_projection_origin",
+                       NC_DOUBLE, 1, &lat0),
+     "UKV lat0");
+  Nc(nc_put_att_double(file, mapping, "longitude_of_projection_origin",
+                       NC_DOUBLE, 1, &lon0),
+     "UKV lon0");
+  Nc(nc_put_att_double(file, mapping, "false_easting", NC_DOUBLE, 1, &zero),
+     "UKV false easting");
+  Nc(nc_put_att_double(file, mapping, "false_northing", NC_DOUBLE, 1, &zero),
+     "UKV false northing");
+  Nc(nc_put_att_double(file, mapping, "semi_major_axis", NC_DOUBLE, 1,
+                       &semi_major),
+     "UKV semi major");
+  Nc(nc_put_att_double(file, mapping, "inverse_flattening", NC_DOUBLE, 1,
+                       &inverse_flattening),
+     "UKV inverse flattening");
+  Nc(nc_put_att_text(file, data, "grid_mapping", mapping_name.size(),
+                     mapping_name.c_str()),
+     "UKV field mapping");
+  Nc(nc_put_att_text(file, data, "standard_name", standard_name.size(),
+                     standard_name.c_str()),
+     "UKV standard name");
+  Nc(nc_put_att_text(file, data, "units", units.size(), units.c_str()),
+     "UKV units");
   Nc(nc_enddef(file), "end UKV definitions");
   const double axis[] = {-500000, -250000, 0, 250000, 500000};
   std::vector<double> values(25, value);
@@ -283,27 +345,32 @@ std::vector<unsigned char> Bzip(const std::vector<unsigned char>& input) {
 }
 
 std::vector<unsigned char> BloscInt16(const std::vector<std::int16_t>& input) {
-  std::vector<unsigned char> output(input.size() * sizeof(std::int16_t) + BLOSC_MAX_OVERHEAD);
+  std::vector<unsigned char> output(input.size() * sizeof(std::int16_t) +
+                                    BLOSC_MAX_OVERHEAD);
   const int bytes = blosc_compress(5, 1, sizeof(std::int16_t),
-                                   input.size() * sizeof(std::int16_t), input.data(),
-                                   output.data(), output.size());
+                                   input.size() * sizeof(std::int16_t),
+                                   input.data(), output.data(), output.size());
   if (bytes <= 0) throw std::runtime_error("test Blosc compression failed");
   output.resize(static_cast<std::size_t>(bytes));
   return output;
 }
 
 std::vector<unsigned char> BloscFloat(const std::vector<float>& input) {
-  std::vector<unsigned char> output(input.size() * sizeof(float) + BLOSC_MAX_OVERHEAD);
-  const int bytes = blosc_compress(5, 1, sizeof(float), input.size() * sizeof(float),
-                                   input.data(), output.data(), output.size());
-  if (bytes <= 0) throw std::runtime_error("test float Blosc compression failed");
+  std::vector<unsigned char> output(input.size() * sizeof(float) +
+                                    BLOSC_MAX_OVERHEAD);
+  const int bytes =
+      blosc_compress(5, 1, sizeof(float), input.size() * sizeof(float),
+                     input.data(), output.data(), output.size());
+  if (bytes <= 0)
+    throw std::runtime_error("test float Blosc compression failed");
   output.resize(static_cast<std::size_t>(bytes));
   return output;
 }
 
 std::filesystem::path Temp(const std::string& name) {
   return std::filesystem::temp_directory_path() /
-         ("environmental-grib-tests-" + std::to_string(::getpid()) + "-" + name);
+         ("environmental-grib-tests-" + std::to_string(::getpid()) + "-" +
+          name);
 }
 }  // namespace
 
@@ -336,8 +403,7 @@ int main() {
         "job protocol secret environment mapping");
   const auto capabilities = eg::GeneratorCapabilitiesJson();
   Check(capabilities["schemaVersion"].asInt() == 1 &&
-            capabilities["operations"][0].asString() ==
-                "generateEnvironment",
+            capabilities["operations"][0].asString() == "generateEnvironment",
         "job protocol capabilities");
   int retry_attempts = 0;
   std::vector<int> retry_delays;
@@ -355,16 +421,16 @@ int main() {
       },
       {.max_attempts = 3, .initial_delay_ms = 5, .maximum_delay_ms = 10},
       [&](int delay) { retry_delays.push_back(delay); });
-  const auto retry_bytes = retrying_download(
-      "https://example.invalid/data?username=secret", 1.0);
+  const auto retry_bytes =
+      retrying_download("https://example.invalid/data?username=secret", 1.0);
   Check(retry_bytes.size() == 3 && retry_attempts == 3 &&
             retry_delays == std::vector<int>({5, 10}),
         "transient HTTP failures use bounded exponential retry");
   Check(!retry_progress.empty() &&
             retry_progress.back().second["resource"].asString() ==
                 "https://example.invalid/data" &&
-            retry_progress.back().second["resource"].asString().find("secret") ==
-                std::string::npos,
+            retry_progress.back().second["resource"].asString().find(
+                "secret") == std::string::npos,
         "retry progress identifies provider resource without query secrets");
   Check(eg::SanitizedHttpResource(
             "ftp://username:password@example.invalid/path?token=secret") ==
@@ -390,9 +456,9 @@ int main() {
     return false;
   };
   for (const auto* source :
-       {"none", "auto", "existing-file", "tpxo", "tpxo-cache",
-        "netcdf", "synthetic", "marine_ie_irish_sea",
-        "noaa_rtofs_global", "copernicus_nws", "copernicus_global"}) {
+       {"none", "auto", "existing-file", "tpxo", "tpxo-cache", "netcdf",
+        "synthetic", "marine_ie_irish_sea", "noaa_rtofs_global",
+        "copernicus_nws", "copernicus_global"}) {
     Check(has_current_source(source),
           std::string("existing current source remains available: ") + source);
   }
@@ -401,11 +467,14 @@ int main() {
   job_json["schemaVersion"] = 1;
   job_request["currentSource"] = "offline-tidal";
   job_request["offlineTidalFile"] = "/tmp/global.xtd";
+  job_request["offlineCurrentMode"] = "tide-expected-seasonal";
   const auto offline_job = eg::ParseGeneratorJob(job_json);
-  Check(offline_job.request.current_source == "offline-tidal" &&
-            offline_job.request.offline_tidal_file ==
-                std::filesystem::path("/tmp/global.xtd"),
-        "job protocol maps the Offline Tidal package path");
+  Check(
+      offline_job.request.current_source == "offline-tidal" &&
+          offline_job.request.offline_tidal_file ==
+              std::filesystem::path("/tmp/global.xtd") &&
+          offline_job.request.offline_current_mode == "tide-expected-seasonal",
+      "job protocol maps the Offline current package path and explicit mode");
   job_json["schemaVersion"] = 2;
   bool rejected_job_schema = false;
   try {
@@ -440,12 +509,10 @@ int main() {
   int preflight_http_calls = 0;
   ExpectValidation(
       [&] {
-        eg::GenerateEnvironment(
-            invalid_tpxo,
-            [&](const std::string&, double) {
-              ++preflight_http_calls;
-              return std::vector<unsigned char>{};
-            });
+        eg::GenerateEnvironment(invalid_tpxo, [&](const std::string&, double) {
+          ++preflight_http_calls;
+          return std::vector<unsigned char>{};
+        });
       },
       "invalid TPXO model rejected before generation");
   Check(preflight_http_calls == 0,
@@ -477,14 +544,13 @@ int main() {
             Near(tpxo_seam_cache.u_cm_s.front().real(), 10.0),
         "TPXO negative dateline request maps back from 0..360 source axis");
   std::filesystem::remove_all(tpxo_seam_root);
-  const auto predictor_time =
-      eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
+  const auto predictor_time = eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
   const std::vector<std::string> predictor_constituents{"m2", "s2"};
-  const std::vector<std::complex<double>> predictor_coefficients{
-      {10.0, 2.0}, {5.0, -1.0}};
-  const auto predictor = eg::PredictAtlasHarmonicGrid(
-      predictor_constituents, predictor_coefficients, 1, {predictor_time},
-      false);
+  const std::vector<std::complex<double>> predictor_coefficients{{10.0, 2.0},
+                                                                 {5.0, -1.0}};
+  const auto predictor = eg::PredictAtlasHarmonicGrid(predictor_constituents,
+                                                      predictor_coefficients, 1,
+                                                      {predictor_time}, false);
   std::vector<std::complex<double>> doubled = predictor_coefficients;
   for (auto& value : doubled) value *= 2.0;
   const auto predictor_doubled = eg::PredictAtlasHarmonicGrid(
@@ -493,22 +559,20 @@ int main() {
             Near(predictor_doubled.front(), predictor.front() * 2.0),
         "ATLAS component predictor preserves coefficient units and linearity");
   const auto predictor_reordered = eg::PredictAtlasHarmonicGrid(
-      {"s2", "m2"},
-      {predictor_coefficients[1], predictor_coefficients[0]}, 1,
+      {"s2", "m2"}, {predictor_coefficients[1], predictor_coefficients[0]}, 1,
       {predictor_time}, false);
   Check(Near(predictor_reordered.front(), predictor.front()),
         "ATLAS component prediction is constituent-order independent");
   ExpectValidation(
       [&] {
-        eg::PredictAtlasHarmonicGrid(
-            {"m2", "m2"}, predictor_coefficients, 1, {predictor_time},
-            false);
+        eg::PredictAtlasHarmonicGrid({"m2", "m2"}, predictor_coefficients, 1,
+                                     {predictor_time}, false);
       },
       "duplicate ATLAS harmonic constituents rejected");
   ExpectValidation(
       [&] {
-        eg::PredictAtlasHarmonicGrid(
-            {"m2", "s2"}, {{1.0, 0.0}}, 1, {predictor_time}, false);
+        eg::PredictAtlasHarmonicGrid({"m2", "s2"}, {{1.0, 0.0}}, 1,
+                                     {predictor_time}, false);
       },
       "malformed ATLAS harmonic dimensions rejected");
   tpxo_units_cache.metadata.removeMember("velocity_units");
@@ -526,40 +590,54 @@ int main() {
                    "inverted bbox rejected");
   const auto grid = eg::BuildRegularGrid(bbox, 0.5);
   Check(grid.nx() == 3 && grid.ny() == 3, "inclusive 3x3 grid");
-  Check(grid.longitudes == std::vector<double>({-1.0, -0.5, 0.0}), "grid longitudes");
+  Check(grid.longitudes == std::vector<double>({-1.0, -0.5, 0.0}),
+        "grid longitudes");
   const auto start = eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
-  Check(eg::FormatUtcDateTime(start) == "2026-07-01T00:00:00Z", "UTC round trip");
+  Check(eg::FormatUtcDateTime(start) == "2026-07-01T00:00:00Z",
+        "UTC round trip");
   Check(eg::BuildTimeSequence(start, 6, 3).size() == 3, "time sequence count");
-  ExpectValidation([&] { eg::BuildTimeSequence(start, 5, 2); }, "non-divisible time range rejected");
+  ExpectValidation([&] { eg::BuildTimeSequence(start, 5, 2); },
+                   "non-divisible time range rejected");
 
   const auto [speed, direction] = eg::ComponentsToSpeedDirection(0.514444, 0.0);
-  Check(Near(speed, 1.0) && Near(direction, 90.0), "component conversion eastward");
-  Check(Near(eg::DirectionErrorDegrees(350.0, 10.0), -20.0), "direction error wraps");
+  Check(Near(speed, 1.0) && Near(direction, 90.0),
+        "component conversion eastward");
+  Check(Near(eg::DirectionErrorDegrees(350.0, 10.0), -20.0),
+        "direction error wraps");
   const auto [u, v] = eg::SpeedDirectionToComponents(2.0, 90.0, "knots");
   Check(Near(u, 1.028888) && std::abs(v) < 1e-12, "speed conversion knots");
 
   const auto constant = eg::MakeConstantCurrent(bbox, start, grid, 1.0, 2.0);
-  Check(constant.u_mps.size() == 9 && constant.u_mps.front() == 1.0 && constant.v_mps.back() == 2.0,
+  Check(constant.u_mps.size() == 9 && constant.u_mps.front() == 1.0 &&
+            constant.v_mps.back() == 2.0,
         "constant source");
   const auto synthetic_a = eg::MakeSyntheticRotaryCurrent(bbox, start, grid);
   const auto synthetic_b = eg::MakeSyntheticRotaryCurrent(bbox, start, grid);
-  Check(synthetic_a.u_mps == synthetic_b.u_mps && synthetic_a.v_mps == synthetic_b.v_mps,
+  Check(synthetic_a.u_mps == synthetic_b.u_mps &&
+            synthetic_a.v_mps == synthetic_b.v_mps,
         "synthetic source deterministic");
 
   eg::ProviderRegistry registry;
-  Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 48, registry)->id == "marine_ie_irish_sea",
+  Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 48, registry)
+                ->id == "marine_ie_irish_sea",
         "Marine.ie selected for short Irish Sea request");
-  Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 96, registry)->id == "copernicus_nws",
+  Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 96, registry)
+                ->id == "copernicus_nws",
         "NWS selected beyond Marine.ie duration");
-  Check(!registry.Get("noaa_rtofs_global").SupportsBbox({-6.5, 52.0, -4.5, 55.0}) &&
-            registry.Get("noaa_rtofs_global").SupportsBbox({-80.0, 30.0, -79.0, 31.0}),
+  Check(!registry.Get("noaa_rtofs_global")
+                .SupportsBbox({-6.5, 52.0, -4.5, 55.0}) &&
+            registry.Get("noaa_rtofs_global")
+                .SupportsBbox({-80.0, 30.0, -79.0, 31.0}),
         "RTOFS advertises only downloadable public regions");
   Check(eg::RedactText("https://x.test?a=1&password=secret") ==
-            "https://x.test?a=1&password=<redacted>", "query secret redaction");
+            "https://x.test?a=1&password=<redacted>",
+        "query secret redaction");
 
   const auto minimal = Temp("minimal.grb");
-  const std::vector<unsigned char> message = {'G','R','I','B',0,0,12,1,'7','7','7','7'};
-  std::ofstream(minimal, std::ios::binary).write(reinterpret_cast<const char*>(message.data()), message.size());
+  const std::vector<unsigned char> message = {'G', 'R', 'I', 'B', 0,   0,
+                                              12,  1,   '7', '7', '7', '7'};
+  std::ofstream(minimal, std::ios::binary)
+      .write(reinterpret_cast<const char*>(message.data()), message.size());
   Check(eg::ScanGribMessages(minimal).message_count == 1, "strict GRIB scan");
   const auto wrapped = Temp("wrapped.grb");
   const auto clean = Temp("clean.grb");
@@ -578,14 +656,17 @@ int main() {
   const auto current_path = Temp("current.grb");
   eg::WriteGrib1Currents({constant}, current_path);
   const auto inspection = eg::InspectGrib(current_path);
-  Check(inspection["message_count"].asUInt64() == 2, "ecCodes current writer messages");
+  Check(inspection["message_count"].asUInt64() == 2,
+        "ecCodes current writer messages");
   Check(inspection["current_component_counts"]["u_49"].asUInt64() == 1 &&
             inspection["current_component_counts"]["v_50"].asUInt64() == 1,
         "ecCodes current parameters");
   const auto grib2_path = Temp("fields.grb2");
   std::vector<eg::Grib2Field> grib2_fields;
-  for (const auto& name : {"10u", "10v", "prmsl", "2t", "swh", "perpw", "dirpw"}) {
-    grib2_fields.push_back({0, name, std::vector<double>(grid.size(), 1.5), {}});
+  for (const auto& name :
+       {"10u", "10v", "prmsl", "2t", "swh", "perpw", "dirpw"}) {
+    grib2_fields.push_back(
+        {0, name, std::vector<double>(grid.size(), 1.5), {}});
   }
   eg::WriteRegularLatLonGrib2(grid, start, grib2_fields, grib2_path);
   const auto grib2_inspection = eg::InspectGrib(grib2_path);
@@ -598,37 +679,47 @@ int main() {
   const eg::GFSCycle known_cycle{"20260701", "00"};
   const auto weather_url = eg::BuildGfsFilterUrl(
       known_cycle, 6, {-8.5, 50.5, -2.5, 56.5}, weather_fields);
-  Check(weather_url.find("file=gfs.t00z.pgrb2.0p25.f006") != std::string::npos &&
-            weather_url.find("dir=%2Fgfs.20260701%2F00%2Fatmos") != std::string::npos &&
-            weather_url.find("var_UGRD=on") != std::string::npos,
-        "GFS filter URL parity");
+  Check(
+      weather_url.find("file=gfs.t00z.pgrb2.0p25.f006") != std::string::npos &&
+          weather_url.find("dir=%2Fgfs.20260701%2F00%2Fatmos") !=
+              std::string::npos &&
+          weather_url.find("var_UGRD=on") != std::string::npos,
+      "GFS filter URL parity");
   eg::GFSRequest cycle_request{{-1, 50, 0, 51}, Temp("unused.grb"), 6};
   cycle_request.max_auto_cycles = 3;
-  const auto cycles = eg::GfsCycleCandidates(cycle_request, eg::ParseUtcDateTime("2026-07-02T13:30:00Z"));
-  Check(cycles.size() == 3 && cycles[0].date == "20260702" && cycles[0].cycle == "12" &&
-            cycles[2].cycle == "00", "GFS automatic cycle order");
+  const auto cycles = eg::GfsCycleCandidates(
+      cycle_request, eg::ParseUtcDateTime("2026-07-02T13:30:00Z"));
+  Check(cycles.size() == 3 && cycles[0].date == "20260702" &&
+            cycles[0].cycle == "12" && cycles[2].cycle == "00",
+        "GFS automatic cycle order");
   std::ifstream source_bytes(current_path, std::ios::binary | std::ios::ate);
-  std::vector<unsigned char> downloaded(static_cast<std::size_t>(source_bytes.tellg()));
+  std::vector<unsigned char> downloaded(
+      static_cast<std::size_t>(source_bytes.tellg()));
   source_bytes.seekg(0);
-  source_bytes.read(reinterpret_cast<char*>(downloaded.data()), static_cast<std::streamsize>(downloaded.size()));
+  source_bytes.read(reinterpret_cast<char*>(downloaded.data()),
+                    static_cast<std::streamsize>(downloaded.size()));
   const auto weather_path = Temp("gfs.grb");
   eg::GFSRequest weather_request{{-8.5, 50.5, -2.5, 56.5}, weather_path, 6};
-  weather_request.cycle = "00"; weather_request.date = "20260701";
+  weather_request.cycle = "00";
+  weather_request.date = "20260701";
   const auto generated_weather = eg::GenerateGfs(
       weather_request, [&](const std::string&, double) { return downloaded; });
-  Check(generated_weather.message_count == 6 && generated_weather.urls.size() == 3,
+  Check(generated_weather.message_count == 6 &&
+            generated_weather.urls.size() == 3,
         "GFS atomic segment assembly with injectable HTTP");
   Check(eg::DwdIconEuForecastHourSequence(6, 3) == std::vector<int>({0, 3, 6}),
         "ICON-EU forecast cadence");
-  Check(eg::BuildDwdIconEuUrl({"20260701", "06"}, 3, "u_10m").find(
-            "2026070106_003_U_10M.grib2.bz2") != std::string::npos,
+  Check(eg::BuildDwdIconEuUrl({"20260701", "06"}, 3, "u_10m")
+                .find("2026070106_003_U_10M.grib2.bz2") != std::string::npos,
         "ICON-EU URL parity");
   const auto icon_path = Temp("icon.grb");
   eg::GFSRequest icon_request{{-8.5, 50.5, -2.5, 56.5}, icon_path, 0};
-  icon_request.cycle = "06"; icon_request.date = "20260701";
+  icon_request.cycle = "06";
+  icon_request.date = "20260701";
   const auto compressed_current = Bzip(downloaded);
   const auto icon = eg::GenerateDwdIconEu(
-      icon_request, [&](const std::string&, double) { return compressed_current; });
+      icon_request,
+      [&](const std::string&, double) { return compressed_current; });
   Check(icon.message_count == 8 && icon.urls.size() == 4,
         "ICON-EU decompression and atomic field assembly");
   const std::string hrrr_inventory =
@@ -642,38 +733,49 @@ int main() {
         "HRRR inventory parser");
   const auto hrrr_path = Temp("hrrr.grb");
   eg::GFSRequest hrrr_request{{-100.0, 30.0, -90.0, 40.0}, hrrr_path, 0, 1};
-  hrrr_request.cycle = "06"; hrrr_request.date = "20260701";
+  hrrr_request.cycle = "06";
+  hrrr_request.date = "20260701";
   const auto hrrr = eg::GenerateHrrr(
       hrrr_request,
       [&](const std::string&, double) {
-        return std::vector<unsigned char>(hrrr_inventory.begin(), hrrr_inventory.end());
+        return std::vector<unsigned char>(hrrr_inventory.begin(),
+                                          hrrr_inventory.end());
       },
-      [&](const std::string&, std::size_t, std::size_t, double) { return downloaded; });
+      [&](const std::string&, std::size_t, std::size_t, double) {
+        return downloaded;
+      });
   Check(hrrr.message_count == 8 && hrrr.urls.size() == 1,
         "HRRR indexed field assembly");
   Check(eg::BuildEcmwfDataUrl({"20260710", "00"}, 6, false) ==
-            "https://data.ecmwf.int/forecasts/20260710/00z/ifs/0p25/oper/20260710000000-6h-oper-fc.grib2",
+            "https://data.ecmwf.int/forecasts/20260710/00z/ifs/0p25/oper/"
+            "20260710000000-6h-oper-fc.grib2",
         "ECMWF Open Data URL parity");
   Check(eg::UkvForecastHours(60, 1).back() == 60 &&
             eg::UkvForecastHours(60, 1).size() == 57,
         "UKV hourly then three-hour cadence");
   Check(eg::UkvSourceKey("20260703T0000Z", 6, "wind_speed_at_10m") ==
-            "uk-deterministic-2km/20260703T0000Z/20260703T0600Z-PT0006H00M-wind_speed_at_10m.nc",
+            "uk-deterministic-2km/20260703T0000Z/"
+            "20260703T0600Z-PT0006H00M-wind_speed_at_10m.nc",
         "UKV source key parity");
   std::string ecmwf_index;
   for (const auto& field : {"10u", "10v", "msl", "2t"}) {
     ecmwf_index += std::string("{\"_offset\":0,\"_length\":100,\"param\":\"") +
-                   field + "\",\"type\":\"fc\",\"step\":\"0\",\"levtype\":\"sfc\"}\n";
+                   field +
+                   "\",\"type\":\"fc\",\"step\":\"0\",\"levtype\":\"sfc\"}\n";
   }
   const auto ecmwf_path = Temp("ecmwf.grb");
   eg::GFSRequest ecmwf_request{{-8.5, 50.5, -2.5, 56.5}, ecmwf_path, 0, 3};
-  ecmwf_request.cycle = "00"; ecmwf_request.date = "20260710";
+  ecmwf_request.cycle = "00";
+  ecmwf_request.date = "20260710";
   const auto ecmwf = eg::GenerateEcmwfOpenData(
       ecmwf_request, false,
       [&](const std::string&, double) {
-        return std::vector<unsigned char>(ecmwf_index.begin(), ecmwf_index.end());
+        return std::vector<unsigned char>(ecmwf_index.begin(),
+                                          ecmwf_index.end());
       },
-      [&](const std::string&, std::size_t, std::size_t, double) { return downloaded; });
+      [&](const std::string&, std::size_t, std::size_t, double) {
+        return downloaded;
+      });
   Check(ecmwf.message_count == 8 && ecmwf.urls.size() == 1,
         "ECMWF index and range assembly");
   auto wrapped_current = downloaded;
@@ -681,12 +783,15 @@ int main() {
   wrapped_current.insert(wrapped_current.end(), {'t', 'a', 'i', 'l'});
   const auto marine_path = Temp("marine.grb");
   std::string marine_url;
-  const auto marine = eg::DownloadMarineIe(
-      marine_path, true,
-      [&](const std::string& url, double) { marine_url = url; return wrapped_current; });
+  const auto marine = eg::DownloadMarineIe(marine_path, true,
+                                           [&](const std::string& url, double) {
+                                             marine_url = url;
+                                             return wrapped_current;
+                                           });
   Check(marine.inspection["current_component_counts"]["u_49"].asUInt64() == 1 &&
             marine.skipped_byte_count == 8 &&
-            marine_url.find("ftpossapp2:FtpOssapp2@ftp.marine.ie") != std::string::npos,
+            marine_url.find("ftpossapp2:FtpOssapp2@ftp.marine.ie") !=
+                std::string::npos,
         "Marine.ie normalisation and current validation");
   Check(eg::RtofsForecastHours(18, 6) == std::vector<int>({6, 12, 18}),
         "RTOFS native forecast cadence");
@@ -712,13 +817,16 @@ int main() {
       },
       [&](const std::string&, double) {
         std::ifstream input(rtofs_source, std::ios::binary | std::ios::ate);
-        std::vector<unsigned char> bytes(static_cast<std::size_t>(input.tellg()));
+        std::vector<unsigned char> bytes(
+            static_cast<std::size_t>(input.tellg()));
         input.seekg(0);
-        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        input.read(reinterpret_cast<char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
         return bytes;
       });
   Check(rtofs.message_count == 2 &&
-            eg::InspectGrib(rtofs_output)["current_component_counts"]["u_49"].asUInt64() == 1,
+            eg::InspectGrib(rtofs_output)["current_component_counts"]["u_49"]
+                    .asUInt64() == 1,
         "RTOFS curvilinear Delaunay conversion");
   const auto copernicus_output = Temp("copernicus.grb");
   eg::CopernicusRequest copernicus_request;
@@ -732,21 +840,27 @@ int main() {
   copernicus_request.overwrite = true;
   const std::string copernicus_product =
       R"({"links":[{"rel":"item","href":"cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i_202607/dataset.stac.json"}]})";
-  const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(start.time_since_epoch()).count();
+  const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            start.time_since_epoch())
+                            .count();
   const std::string copernicus_item =
-      std::string(R"({"id":"cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i_202607","assets":{"timeChunked":{"href":"https://test.invalid/nws.zarr","viewDims":{"latitude":{"coords":{"min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"coords":{"min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"coords":{"min":)") +
-      std::to_string(epoch_ms) +
-      R"(,"max":)" + std::to_string(epoch_ms) +
+      std::string(
+          R"({"id":"cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i_202607","assets":{"timeChunked":{"href":"https://test.invalid/nws.zarr","viewDims":{"latitude":{"coords":{"min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"coords":{"min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"coords":{"min":)") +
+      std::to_string(epoch_ms) + R"(,"max":)" + std::to_string(epoch_ms) +
       R"(,"step":3600000,"len":1}}}}},"properties":{"cube:variables":{"uo":{"scale":0.001,"offset":0.0,"missingValue":-32768},"vo":{"scale":0.001,"offset":0.0,"missingValue":-32768}}}})";
-  const auto u_chunk = BloscInt16({100, 200, 300, 200, 300, 400, 300, 400, 500});
-  const auto v_chunk = BloscInt16({-100, -200, -300, -200, -300, -400, -300, -400, -500});
+  const auto u_chunk =
+      BloscInt16({100, 200, 300, 200, 300, 400, 300, 400, 500});
+  const auto v_chunk =
+      BloscInt16({-100, -200, -300, -200, -300, -400, -300, -400, -500});
   const auto copernicus = eg::GenerateCopernicusNws(
       copernicus_request,
       [&](const std::string& url, double) {
         if (url.find("product.stac.json") != std::string::npos)
-          return std::vector<unsigned char>(copernicus_product.begin(), copernicus_product.end());
+          return std::vector<unsigned char>(copernicus_product.begin(),
+                                            copernicus_product.end());
         if (url.find("dataset.stac.json") != std::string::npos)
-          return std::vector<unsigned char>(copernicus_item.begin(), copernicus_item.end());
+          return std::vector<unsigned char>(copernicus_item.begin(),
+                                            copernicus_item.end());
         if (url.find("/uo/0.0.0") != std::string::npos) return u_chunk;
         if (url.find("/vo/0.0.0") != std::string::npos) return v_chunk;
         throw std::runtime_error("unexpected mocked Copernicus URL: " + url);
@@ -754,10 +868,12 @@ int main() {
       [](const std::string& username, const std::string& password, double) {
         return username == "test-user" && password == "secret";
       });
-  Check(copernicus.message_count == 2 &&
-            copernicus.dataset_version.find("202607") != std::string::npos &&
-            eg::InspectGrib(copernicus_output)["current_component_counts"]["v_50"].asUInt64() == 1,
-        "Copernicus dynamic STAC and Blosc Zarr conversion");
+  Check(
+      copernicus.message_count == 2 &&
+          copernicus.dataset_version.find("202607") != std::string::npos &&
+          eg::InspectGrib(copernicus_output)["current_component_counts"]["v_50"]
+                  .asUInt64() == 1,
+      "Copernicus dynamic STAC and Blosc Zarr conversion");
   const auto global_current_output = Temp("copernicus-global.grb");
   eg::CopernicusRequest global_request = copernicus_request;
   global_request.provider = "copernicus_global";
@@ -765,31 +881,39 @@ int main() {
   const std::string global_product =
       R"({"links":[{"rel":"item","href":"cmems_mod_glo_phy_anfc_0.083deg_PT1H-m_202607/dataset.stac.json"}]})";
   const std::string global_item =
-      std::string(R"({"id":"cmems_mod_glo_phy_anfc_0.083deg_PT1H-m_202607","assets":{"timeChunked":{"href":"https://test.invalid/global.zarr","viewDims":{"elevation":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"explicit","values":[-0.5],"len":1}},"latitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"minMaxStep","min":)") +
+      std::string(
+          R"({"id":"cmems_mod_glo_phy_anfc_0.083deg_PT1H-m_202607","assets":{"timeChunked":{"href":"https://test.invalid/global.zarr","viewDims":{"elevation":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"explicit","values":[-0.5],"len":1}},"latitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"minMaxStep","min":)") +
       std::to_string(epoch_ms) + R"(,"max":)" + std::to_string(epoch_ms) +
       R"(,"step":3600000,"len":1}}},"viewVariables":{"uo":{"dtype":"<f4"},"vo":{"dtype":"<f4"}}}},"properties":{"cube:variables":{"uo":{"dimensions":["time","elevation","latitude","longitude"],"scale":null,"offset":null,"missingValue":9.96921e36},"vo":{"dimensions":["time","elevation","latitude","longitude"],"scale":null,"offset":null,"missingValue":9.96921e36}}}})";
-  const auto global_u = BloscFloat({.1f,.2f,.3f,.2f,.3f,.4f,.3f,.4f,.5f});
-  const auto global_v = BloscFloat({-.1f,-.2f,-.3f,-.2f,-.3f,-.4f,-.3f,-.4f,-.5f});
+  const auto global_u =
+      BloscFloat({.1f, .2f, .3f, .2f, .3f, .4f, .3f, .4f, .5f});
+  const auto global_v =
+      BloscFloat({-.1f, -.2f, -.3f, -.2f, -.3f, -.4f, -.3f, -.4f, -.5f});
   const auto global_current = eg::GenerateCopernicusGlobal(
       global_request,
       [&](const std::string& url, double) {
         if (url.find("product.stac.json") != std::string::npos)
-          return std::vector<unsigned char>(global_product.begin(), global_product.end());
+          return std::vector<unsigned char>(global_product.begin(),
+                                            global_product.end());
         if (url.find("dataset.stac.json") != std::string::npos)
-          return std::vector<unsigned char>(global_item.begin(), global_item.end());
+          return std::vector<unsigned char>(global_item.begin(),
+                                            global_item.end());
         if (url.find("/uo/0.0.0.0") != std::string::npos) return global_u;
         if (url.find("/vo/0.0.0.0") != std::string::npos) return global_v;
         throw std::runtime_error("unexpected mocked Global URL: " + url);
       },
       [](const std::string&, const std::string&, double) { return true; });
   Check(global_current.message_count == 2 &&
-            eg::InspectGrib(global_current_output)["current_component_counts"]["u_49"].asUInt64() == 1,
+            eg::InspectGrib(
+                global_current_output)["current_component_counts"]["u_49"]
+                    .asUInt64() == 1,
         "Copernicus Global float32 four-dimensional ARCO conversion");
   const auto remote_wave_output = Temp("copernicus-remote-waves.grb2");
   const std::string wave_product =
       R"({"links":[{"rel":"item","href":"cmems_mod_glo_wav_anfc_0.083deg_PT3H-i_202607/dataset.stac.json"}]})";
   const std::string wave_item =
-      std::string(R"({"id":"cmems_mod_glo_wav_anfc_0.083deg_PT3H-i_202607","assets":{"timeChunked":{"href":"https://test.invalid/waves.zarr","viewDims":{"latitude":{"chunkLen":{"VHM0":3,"VTPK":3,"VMDR":3},"coords":{"type":"minMaxStep","min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"chunkLen":{"VHM0":3,"VTPK":3,"VMDR":3},"coords":{"type":"minMaxStep","min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"chunkLen":{"VHM0":1,"VTPK":1,"VMDR":1},"coords":{"type":"minMaxStep","min":)") +
+      std::string(
+          R"({"id":"cmems_mod_glo_wav_anfc_0.083deg_PT3H-i_202607","assets":{"timeChunked":{"href":"https://test.invalid/waves.zarr","viewDims":{"latitude":{"chunkLen":{"VHM0":3,"VTPK":3,"VMDR":3},"coords":{"type":"minMaxStep","min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"chunkLen":{"VHM0":3,"VTPK":3,"VMDR":3},"coords":{"type":"minMaxStep","min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"chunkLen":{"VHM0":1,"VTPK":1,"VMDR":1},"coords":{"type":"minMaxStep","min":)") +
       std::to_string(epoch_ms) + R"(,"max":)" + std::to_string(epoch_ms) +
       R"(,"step":10800000,"len":1}}},"viewVariables":{"VHM0":{"dtype":"<i2"},"VTPK":{"dtype":"<i2"},"VMDR":{"dtype":"<i2"}}}},"properties":{"cube:variables":{"VHM0":{"dimensions":["time","latitude","longitude"],"scale":0.01,"offset":0,"missingValue":-32767},"VTPK":{"dimensions":["time","latitude","longitude"],"scale":0.01,"offset":0,"missingValue":-32767},"VMDR":{"dimensions":["time","latitude","longitude"],"scale":0.01,"offset":180,"missingValue":-32767}}}})";
   const auto height_chunk = BloscInt16(std::vector<std::int16_t>(9, 200));
@@ -797,21 +921,23 @@ int main() {
   const auto direction_chunk = BloscInt16(std::vector<std::int16_t>(9, 9000));
   const auto remote_waves = eg::GenerateCopernicusGlobalWaves(
       eg::BoundingBox{-7.0, 51.5, -6.0, 52.5}, start, 0, 3, "test-user",
-      "secret", remote_wave_output,
-      0.5, true,
+      "secret", remote_wave_output, 0.5, true,
       [&](const std::string& url, double) {
         if (url.find("product.stac.json") != std::string::npos)
-          return std::vector<unsigned char>(wave_product.begin(), wave_product.end());
+          return std::vector<unsigned char>(wave_product.begin(),
+                                            wave_product.end());
         if (url.find("dataset.stac.json") != std::string::npos)
           return std::vector<unsigned char>(wave_item.begin(), wave_item.end());
         if (url.find("/VHM0/0.0.0") != std::string::npos) return height_chunk;
         if (url.find("/VTPK/0.0.0") != std::string::npos) return period_chunk;
-        if (url.find("/VMDR/0.0.0") != std::string::npos) return direction_chunk;
+        if (url.find("/VMDR/0.0.0") != std::string::npos)
+          return direction_chunk;
         throw std::runtime_error("unexpected mocked wave URL: " + url);
       },
       [](const std::string&, const std::string&, double) { return true; });
   Check(remote_waves.message_count == 3 &&
-            eg::InspectGrib(remote_wave_output)["short_name_counts"]["dirpw"].asUInt64() == 1,
+            eg::InspectGrib(remote_wave_output)["short_name_counts"]["dirpw"]
+                    .asUInt64() == 1,
         "Copernicus Global packed wave ARCO conversion");
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
   const auto ukv_pressure = Temp("ukv-pressure.nc");
@@ -819,15 +945,19 @@ int main() {
   const auto ukv_speed = Temp("ukv-speed.nc");
   const auto ukv_direction = Temp("ukv-direction.nc");
   const auto ukv_output = Temp("ukv.grb2");
-  WriteUkvFixture(ukv_pressure, "pressure_at_mean_sea_level", "air_pressure_at_mean_sea_level", "Pa", 101500.0);
-  WriteUkvFixture(ukv_temperature, "temperature_at_screen_level", "air_temperature", "K", 285.0);
+  WriteUkvFixture(ukv_pressure, "pressure_at_mean_sea_level",
+                  "air_pressure_at_mean_sea_level", "Pa", 101500.0);
+  WriteUkvFixture(ukv_temperature, "temperature_at_screen_level",
+                  "air_temperature", "K", 285.0);
   WriteUkvFixture(ukv_speed, "wind_speed_at_10m", "wind_speed", "m s-1", 10.0);
-  WriteUkvFixture(ukv_direction, "wind_direction_at_10m", "wind_from_direction", "degree", 270.0);
+  WriteUkvFixture(ukv_direction, "wind_direction_at_10m", "wind_from_direction",
+                  "degree", 270.0);
   auto bytes_from = [](const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     std::vector<unsigned char> bytes(static_cast<std::size_t>(input.tellg()));
     input.seekg(0);
-    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    input.read(reinterpret_cast<char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
     return bytes;
   };
   eg::UkvRequest ukv_request;
@@ -838,18 +968,23 @@ int main() {
   ukv_request.date = "20260703";
   ukv_request.grid_spacing_deg = 0.1;
   ukv_request.overwrite = true;
-  const auto ukv = eg::GenerateUkv(
-      ukv_request,
-      [&](const std::string& url, double) {
-        if (url.find("pressure_at_mean_sea_level") != std::string::npos) return bytes_from(ukv_pressure);
-        if (url.find("temperature_at_screen_level") != std::string::npos) return bytes_from(ukv_temperature);
-        if (url.find("wind_speed_at_10m") != std::string::npos) return bytes_from(ukv_speed);
-        if (url.find("wind_direction_at_10m") != std::string::npos) return bytes_from(ukv_direction);
+  const auto ukv =
+      eg::GenerateUkv(ukv_request, [&](const std::string& url, double) {
+        if (url.find("pressure_at_mean_sea_level") != std::string::npos)
+          return bytes_from(ukv_pressure);
+        if (url.find("temperature_at_screen_level") != std::string::npos)
+          return bytes_from(ukv_temperature);
+        if (url.find("wind_speed_at_10m") != std::string::npos)
+          return bytes_from(ukv_speed);
+        if (url.find("wind_direction_at_10m") != std::string::npos)
+          return bytes_from(ukv_direction);
         throw std::runtime_error("unexpected UKV URL");
       });
-  Check(ukv.message_count == 4 &&
-            eg::InspectGrib(ukv_output)["short_name_counts"]["10u"].asUInt64() == 1,
-        "UKV projected NetCDF regrid and meteorological wind conversion");
+  Check(
+      ukv.message_count == 4 &&
+          eg::InspectGrib(ukv_output)["short_name_counts"]["10u"].asUInt64() ==
+              1,
+      "UKV projected NetCDF regrid and meteorological wind conversion");
 #endif
   const auto environment_path = Temp("environment.grb");
   eg::EnvironmentRequest environment;
@@ -933,8 +1068,7 @@ int main() {
   }
   int resumed_coupled_requests = 0;
   const auto resumed_coupled = eg::GenerateEnvironment(
-      coupled_resume,
-      [&](const std::string& url, double) {
+      coupled_resume, [&](const std::string& url, double) {
         if (url.rfind("ftp://", 0) == 0) return downloaded;
         ++resumed_coupled_requests;
         return downloaded;
@@ -943,7 +1077,8 @@ int main() {
             resumed_coupled.message_count == 6,
         "coupled GFS atmosphere/wave checkpoints resume as a matched cycle");
   const auto merged_path = Temp("merged.grb");
-  const auto merged = eg::MergeGribStreams({{"a", current_path}, {"b", current_path}}, merged_path, true);
+  const auto merged = eg::MergeGribStreams(
+      {{"a", current_path}, {"b", current_path}}, merged_path, true);
   Check(merged.output_message_count == 4, "atomic stream merge");
 
   const auto netcdf_path = Temp("currents.nc");
@@ -951,24 +1086,32 @@ int main() {
   eg::NetCDFCurrentSource netcdf(netcdf_path);
   const eg::BoundingBox netcdf_bbox{-7.0, 51.5, -6.0, 52.5};
   const auto netcdf_grid = eg::BuildRegularGrid(netcdf_bbox, 0.5);
-  const auto netcdf_current = netcdf.GetCurrentGrid(netcdf_bbox, start, netcdf_grid);
-  Check(netcdf_current.u_mps.size() == 9 && Near(netcdf_current.u_mps.front(), 0.01) &&
-            Near(netcdf_current.v_mps.back(), 0.02), "NetCDF detection and cm/s conversion");
+  const auto netcdf_current =
+      netcdf.GetCurrentGrid(netcdf_bbox, start, netcdf_grid);
+  Check(netcdf_current.u_mps.size() == 9 &&
+            Near(netcdf_current.u_mps.front(), 0.01) &&
+            Near(netcdf_current.v_mps.back(), 0.02),
+        "NetCDF detection and cm/s conversion");
   const auto source_grid = netcdf.BuildSourceGrid(netcdf_bbox);
-  Check(source_grid.nx() == 3 && source_grid.ny() == 3 && Near(source_grid.spacing_deg, 0.5),
+  Check(source_grid.nx() == 3 && source_grid.ny() == 3 &&
+            Near(source_grid.spacing_deg, 0.5),
         "NetCDF native source grid");
   const auto netcdf_inspection = netcdf.Inspect();
-  Check(netcdf_inspection["detected_u_variable"].asString() == "eastward_sea_water_velocity",
+  Check(netcdf_inspection["detected_u_variable"].asString() ==
+            "eastward_sea_water_velocity",
         "NetCDF inspection detects u variable");
   const auto wave_netcdf = Temp("waves.nc");
   const auto wave_grib = Temp("waves.grb2");
   WriteWaveFixture(wave_netcdf);
   const auto converted_waves = eg::ConvertCopernicusWaveNetCDF(
       wave_netcdf, netcdf_bbox, start, 3, 3, wave_grib, 0.5, true);
-  Check(converted_waves.message_count == 6 &&
-            converted_waves.inspection["short_name_counts"]["swh"].asUInt64() == 2 &&
-            converted_waves.inspection["short_name_counts"]["dirpw"].asUInt64() == 2,
-        "Copernicus wave NetCDF conversion");
+  Check(
+      converted_waves.message_count == 6 &&
+          converted_waves.inspection["short_name_counts"]["swh"].asUInt64() ==
+              2 &&
+          converted_waves.inspection["short_name_counts"]["dirpw"].asUInt64() ==
+              2,
+      "Copernicus wave NetCDF conversion");
 
   const auto wave_only_path = Temp("wave-only-environment.grb");
   eg::EnvironmentRequest wave_only;
@@ -986,17 +1129,42 @@ int main() {
   wave_only.output = wave_only_path;
   wave_only.overwrite = true;
   const auto wave_only_result = eg::GenerateEnvironment(
-      wave_only, [&](const std::string&, double) { return bytes_from(wave_grib); });
-  Check(wave_only_result.message_count == 6 && wave_only_result.inputs.size() == 1 &&
+      wave_only,
+      [&](const std::string&, double) { return bytes_from(wave_grib); });
+  Check(wave_only_result.message_count == 6 &&
+            wave_only_result.inputs.size() == 1 &&
             wave_only_result.wave_provider == "gfs_wave",
         "wave generation remains independent of weather selection");
 
-  for (const auto& path : {minimal, wrapped, clean, current_path, grib2_path, merged_path, netcdf_path, wave_netcdf, wave_grib, wave_only_path, weather_path, icon_path, hrrr_path, ecmwf_path, marine_path, rtofs_source, rtofs_output, copernicus_output, global_current_output, remote_wave_output, environment_path, hourly_resume_path, coupled_resume_path}) {
+  for (const auto& path : {minimal,
+                           wrapped,
+                           clean,
+                           current_path,
+                           grib2_path,
+                           merged_path,
+                           netcdf_path,
+                           wave_netcdf,
+                           wave_grib,
+                           wave_only_path,
+                           weather_path,
+                           icon_path,
+                           hrrr_path,
+                           ecmwf_path,
+                           marine_path,
+                           rtofs_source,
+                           rtofs_output,
+                           copernicus_output,
+                           global_current_output,
+                           remote_wave_output,
+                           environment_path,
+                           hourly_resume_path,
+                           coupled_resume_path}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
   }
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
-  for (const auto& path : {ukv_pressure, ukv_temperature, ukv_speed, ukv_direction, ukv_output}) {
+  for (const auto& path :
+       {ukv_pressure, ukv_temperature, ukv_speed, ukv_direction, ukv_output}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
   }
