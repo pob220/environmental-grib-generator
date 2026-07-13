@@ -341,6 +341,9 @@ int main() {
         "Marine.ie selected for short Irish Sea request");
   Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 96, registry)->id == "copernicus_nws",
         "NWS selected beyond Marine.ie duration");
+  Check(!registry.Get("noaa_rtofs_global").SupportsBbox({-6.5, 52.0, -4.5, 55.0}) &&
+            registry.Get("noaa_rtofs_global").SupportsBbox({-80.0, 30.0, -79.0, 31.0}),
+        "RTOFS advertises only downloadable public regions");
   Check(eg::RedactText("https://x.test?a=1&password=secret") ==
             "https://x.test?a=1&password=<redacted>", "query secret redaction");
 
@@ -467,11 +470,13 @@ int main() {
   wrapped_current.insert(wrapped_current.begin(), {'w', 'r', 'a', 'p'});
   wrapped_current.insert(wrapped_current.end(), {'t', 'a', 'i', 'l'});
   const auto marine_path = Temp("marine.grb");
+  std::string marine_url;
   const auto marine = eg::DownloadMarineIe(
       marine_path, true,
-      [&](const std::string&, double) { return wrapped_current; });
+      [&](const std::string& url, double) { marine_url = url; return wrapped_current; });
   Check(marine.inspection["current_component_counts"]["u_49"].asUInt64() == 1 &&
-            marine.skipped_byte_count == 8,
+            marine.skipped_byte_count == 8 &&
+            marine_url.find("ftpossapp2:FtpOssapp2@ftp.marine.ie") != std::string::npos,
         "Marine.ie normalisation and current validation");
   Check(eg::RtofsForecastHours(18, 6) == std::vector<int>({6, 12, 18}),
         "RTOFS native forecast cadence");
@@ -683,7 +688,28 @@ int main() {
             converted_waves.inspection["short_name_counts"]["dirpw"].asUInt64() == 2,
         "Copernicus wave NetCDF conversion");
 
-  for (const auto& path : {minimal, wrapped, clean, current_path, grib2_path, merged_path, netcdf_path, wave_netcdf, wave_grib, weather_path, icon_path, hrrr_path, ecmwf_path, marine_path, rtofs_source, rtofs_output, copernicus_output, global_current_output, remote_wave_output, environment_path}) {
+  const auto wave_only_path = Temp("wave-only-environment.grb");
+  eg::EnvironmentRequest wave_only;
+  wave_only.bbox = netcdf_bbox;
+  wave_only.start = start;
+  wave_only.hours = 0;
+  wave_only.step_hours = 1;
+  wave_only.wave_step_hours = 1;
+  wave_only.cycle = "00";
+  wave_only.date = "20260701";
+  wave_only.weather_provider = "none";
+  wave_only.include_waves = true;
+  wave_only.wave_provider = "gfs_wave";
+  wave_only.current_source = "none";
+  wave_only.output = wave_only_path;
+  wave_only.overwrite = true;
+  const auto wave_only_result = eg::GenerateEnvironment(
+      wave_only, [&](const std::string&, double) { return bytes_from(wave_grib); });
+  Check(wave_only_result.message_count == 6 && wave_only_result.inputs.size() == 1 &&
+            wave_only_result.wave_provider == "gfs_wave",
+        "wave generation remains independent of weather selection");
+
+  for (const auto& path : {minimal, wrapped, clean, current_path, grib2_path, merged_path, netcdf_path, wave_netcdf, wave_grib, wave_only_path, weather_path, icon_path, hrrr_path, ecmwf_path, marine_path, rtofs_source, rtofs_output, copernicus_output, global_current_output, remote_wave_output, environment_path}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
   }

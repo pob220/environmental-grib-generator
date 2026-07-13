@@ -10,7 +10,7 @@
 namespace environmental_grib {
 namespace {
 constexpr const char* kMarineIeUrl =
-    "ftp://ftp.marine.ie/OSS/modelling/GRIB_Files/irish_sea_ms.grb";
+    "ftp://ftpossapp2:FtpOssapp2@ftp.marine.ie/OSS/modelling/GRIB_Files/irish_sea_ms.grb";
 
 std::filesystem::path TemporarySibling(const std::filesystem::path& output,
                                        const std::string& suffix) {
@@ -76,4 +76,3 @@ Json::Value DirectCurrentResultJson(const DirectCurrentResult& result) {
 }
 
 }  // namespace environmental_grib
-

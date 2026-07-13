@@ -71,7 +71,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   BuildTimeSequence(request.start, request.hours, request.step_hours);
   if (request.output.empty()) throw ValidationError("environment output path is required");
   if (std::filesystem::exists(request.output) && !request.overwrite) throw ValidationError("output already exists; enable overwrite to replace it");
-  if (request.weather_provider == "none" && request.current_source == "none") throw ValidationError("at least one weather or current source must be enabled");
+  if (request.weather_provider == "none" && request.current_source == "none" && !request.include_waves)
+    throw ValidationError("at least one weather, wave, or current source must be enabled");
   const std::string current_source = ResolveCurrentSource(request);
   if (current_source == "tpxo-cache") {
     if (!request.input_cache)
@@ -198,6 +199,20 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     }
   } else if (request.weather_provider != "none") {
     throw UnsupportedSourceError("native weather provider is not yet available: " + request.weather_provider);
+  }
+
+  const auto has_stream = [&](const std::string& label) {
+    return std::any_of(streams.begin(), streams.end(),
+                       [&](const auto& stream) { return stream.first == label; });
+  };
+  if (request.include_waves && request.wave_provider == "gfs_wave" &&
+      !has_stream("waves")) {
+    GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
+                     request.wave_step_hours, request.cycle, request.date, true,
+                     60.0, 8, false, "routing", true};
+    const auto wave = GenerateGfs(waves, http_get, now, progress);
+    streams.emplace_back("waves", wave.output);
+    if (!selected_cycle) selected_cycle = wave.cycle.CycleTime();
   }
 
   if (request.include_waves &&

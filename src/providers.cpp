@@ -3,10 +3,19 @@
 #include <algorithm>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/rtofs.h"
 
 namespace environmental_grib {
 
 bool Provider::SupportsBbox(const BoundingBox& bbox) const {
+  if (id == "noaa_rtofs_global") {
+    try {
+      (void)RtofsRegionForBbox(bbox);
+      return implemented;
+    } catch (const ValidationError&) {
+      return false;
+    }
+  }
   return !coverage.has_value() ? implemented : coverage->Contains(bbox);
 }
 
@@ -48,12 +57,11 @@ ProviderRegistry::ProviderRegistry() {
        .source_grid_regularity_tolerance = 5e-5},
       {.id = "noaa_rtofs_global",
        .label = "NOAA RTOFS Global ocean currents",
-       .coverage = BoundingBox{-180.0, -80.0, 180.0, 90.0},
        .dataset_id = "rtofs",
        .variables = {"u", "v"},
        .implemented = true,
        .resolution = "about 1/12 degree native HYCOM grid",
-       .description = "NOAA Real-Time Ocean Forecast System global ocean-current forecast.",
+       .description = "NOAA Real-Time Ocean Forecast System global model via public regional NetCDF files for US East, US West, and Alaska.",
        .product_id = "NOAA/NCEP RTOFS",
        .default_step_hours = 6,
        .minimum_depth = 0.0,
