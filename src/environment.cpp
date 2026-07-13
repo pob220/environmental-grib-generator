@@ -1,5 +1,6 @@
 #include "environmental_grib/environment.h"
 
+#include <chrono>
 #include <fstream>
 #include <optional>
 #include <unistd.h>
@@ -15,6 +16,7 @@
 #include "environmental_grib/tpxo.h"
 #include "environmental_grib/ukv.h"
 #include "environmental_grib/waves.h"
+#include "environmental_grib/xtd.h"
 
 namespace environmental_grib {
 namespace {
@@ -99,15 +101,23 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     if (!request.tpxo_model_directory)
       throw ValidationError("tpxo current source requires model-dir");
     ResolveTpxo10AtlasDirectory(*request.tpxo_model_directory);
+  } else if (current_source == "offline-tidal") {
+    if (!request.offline_tidal_file) {
+      throw ValidationError(
+          "offline-tidal current source requires offlineTidalFile");
+    }
+    (void)XtdReader(*request.offline_tidal_file);
   }
   if (request.dry_run) {
     return {request.output, 0, 0, request.weather_provider,
             request.include_waves ? request.wave_provider : "none",
-            current_source, std::nullopt, {}, Json::Value(Json::objectValue)};
+            current_source, std::nullopt, {}, Json::Value(Json::objectValue),
+            Json::Value(Json::objectValue)};
   }
   Workspace workspace(request.output, request.keep_intermediate);
   std::vector<std::pair<std::string, std::filesystem::path>> streams;
   std::optional<std::string> selected_cycle;
+  Json::Value diagnostics(Json::objectValue);
 
   if (request.weather_provider == "existing-file") {
     if (!request.weather_file) throw ValidationError("existing weather provider requires weather-file");
@@ -330,6 +340,52 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                              workspace.File("current.grb"),
                              request.infer_minor_tides, true};
     streams.emplace_back("current",GenerateFromTpxo10AtlasModel(current).output);
+  } else if (current_source == "offline-tidal") {
+    if (!request.offline_tidal_file) {
+      throw ValidationError(
+          "offline-tidal current source requires offlineTidalFile");
+    }
+    Report(progress, "loading Offline Tidal package",
+           request.offline_tidal_file->string());
+    const auto grid =
+        BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
+    const auto times =
+        BuildTimeSequence(request.start, request.hours, request.step_hours);
+    XtdReader reader(*request.offline_tidal_file);
+    auto cache = reader.LoadRegion(grid);
+    Report(progress, "calculating Offline Tidal currents",
+           std::to_string(times.size()) + " timestamps");
+    const auto prediction_started = std::chrono::steady_clock::now();
+    auto fields = PredictTpxoCache(cache, times, request.infer_minor_tides);
+    const double prediction_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - prediction_started)
+            .count();
+    const auto path = workspace.File("current.grb");
+    WriteGrib1Currents(fields, path);
+    streams.emplace_back("current", path);
+
+    const auto stats = reader.statistics();
+    diagnostics["offline_tidal"]["package"] =
+        request.offline_tidal_file->string();
+    diagnostics["offline_tidal"]["tiles_loaded"] =
+        Json::UInt64(stats.tiles_loaded);
+    diagnostics["offline_tidal"]["cache_hits"] =
+        Json::UInt64(stats.cache_hits);
+    diagnostics["offline_tidal"]["encrypted_bytes"] =
+        Json::UInt64(stats.encrypted_bytes);
+    diagnostics["offline_tidal"]["compressed_bytes"] =
+        Json::UInt64(stats.compressed_bytes);
+    diagnostics["offline_tidal"]["decompressed_bytes"] =
+        Json::UInt64(stats.decompressed_bytes);
+    diagnostics["offline_tidal"]["peak_cache_bytes"] =
+        Json::UInt64(stats.peak_cache_bytes);
+    diagnostics["offline_tidal"]["tile_load_ms"] = stats.load_ms;
+    diagnostics["offline_tidal"]["interpolation_ms"] =
+        stats.interpolation_ms;
+    diagnostics["offline_tidal"]["package_validation_ms"] =
+        reader.status().validation_ms;
+    diagnostics["offline_tidal"]["harmonic_evaluation_ms"] = prediction_ms;
   } else if (current_source == "synthetic") {
     const auto grid = BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
     std::vector<CurrentGrid> fields;
@@ -348,7 +404,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   for (const auto& [label, path] : streams) { (void)label; input_paths.push_back(path); }
   return {request.output, merged.output_message_count, merged.byte_count,
           request.weather_provider, request.include_waves ? request.wave_provider : "none",
-          current_source, selected_cycle, input_paths, merged.inspection};
+          current_source, selected_cycle, input_paths, merged.inspection,
+          diagnostics};
 }
 
 Json::Value EnvironmentResultJson(const EnvironmentResult& result) {
@@ -362,6 +419,7 @@ Json::Value EnvironmentResultJson(const EnvironmentResult& result) {
   if (result.selected_cycle) value["selected_cycle"] = *result.selected_cycle;
   for (const auto& path : result.inputs) value["inputs"].append(path.string());
   value["inspection"] = result.inspection;
+  value["diagnostics"] = result.diagnostics;
   return value;
 }
 

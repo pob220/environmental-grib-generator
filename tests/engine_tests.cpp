@@ -89,9 +89,11 @@ void WriteNetCDFFixture(const std::filesystem::path& path, const std::string& un
   Nc(nc_close(file), "close fixture");
 }
 
-void WriteTpxoModelFixture(const std::filesystem::path& root) {
+void WriteTpxoModelFixture(
+    const std::filesystem::path& root,
+    const std::array<double, 3>& longitude_axis = {-1.0, -0.5, 0.0}) {
   std::filesystem::create_directories(root);
-  const double axis[] = {-1.0, -0.5, 0.0};
+  const std::array<double, 3> latitude_axis{-1.0, -0.5, 0.0};
   const double depth[] = {100.0, 100.0, 100.0, 100.0, 100.0,
                           100.0, 100.0, 100.0, 100.0};
   int file = -1, x = -1, y = -1;
@@ -114,10 +116,10 @@ void WriteTpxoModelFixture(const std::filesystem::path& root) {
   Nc(nc_put_att_text(file, hv, "units", metres.size(), metres.c_str()),
      "TPXO hv units");
   Nc(nc_enddef(file), "finish TPXO grid definitions");
-  Nc(nc_put_var_double(file, lon_u, axis), "TPXO lon u values");
-  Nc(nc_put_var_double(file, lat_u, axis), "TPXO lat u values");
-  Nc(nc_put_var_double(file, lon_v, axis), "TPXO lon v values");
-  Nc(nc_put_var_double(file, lat_v, axis), "TPXO lat v values");
+  Nc(nc_put_var_double(file, lon_u, longitude_axis.data()), "TPXO lon u values");
+  Nc(nc_put_var_double(file, lat_u, latitude_axis.data()), "TPXO lat u values");
+  Nc(nc_put_var_double(file, lon_v, longitude_axis.data()), "TPXO lon v values");
+  Nc(nc_put_var_double(file, lat_v, latitude_axis.data()), "TPXO lat v values");
   Nc(nc_put_var_double(file, hu, depth), "TPXO hu values");
   Nc(nc_put_var_double(file, hv, depth), "TPXO hv values");
   Nc(nc_close(file), "close TPXO grid fixture");
@@ -151,10 +153,10 @@ void WriteTpxoModelFixture(const std::filesystem::path& root) {
   const std::vector<double> v_values(9, 50000.0);
   const std::vector<double> zero_values(9, 0.0);
   Nc(nc_put_var_text(file, con, constituent), "TPXO constituent value");
-  Nc(nc_put_var_double(file, lon_u, axis), "TPXO model lon u values");
-  Nc(nc_put_var_double(file, lat_u, axis), "TPXO model lat u values");
-  Nc(nc_put_var_double(file, lon_v, axis), "TPXO model lon v values");
-  Nc(nc_put_var_double(file, lat_v, axis), "TPXO model lat v values");
+  Nc(nc_put_var_double(file, lon_u, longitude_axis.data()), "TPXO model lon u values");
+  Nc(nc_put_var_double(file, lat_u, latitude_axis.data()), "TPXO model lat u values");
+  Nc(nc_put_var_double(file, lon_v, longitude_axis.data()), "TPXO model lon v values");
+  Nc(nc_put_var_double(file, lat_v, latitude_axis.data()), "TPXO model lat v values");
   Nc(nc_put_var_double(file, u_real, u_values.data()), "TPXO u real values");
   Nc(nc_put_var_double(file, u_imag, zero_values.data()), "TPXO u imag values");
   Nc(nc_put_var_double(file, v_real, v_values.data()), "TPXO v real values");
@@ -337,6 +339,29 @@ int main() {
             capabilities["operations"][0].asString() ==
                 "generateEnvironment",
         "job protocol capabilities");
+  const auto has_current_source = [&](const std::string& source) {
+    for (const auto& value : capabilities["currentSources"]) {
+      if (value.asString() == source) return true;
+    }
+    return false;
+  };
+  for (const auto* source :
+       {"none", "auto", "existing-file", "tpxo", "tpxo-cache",
+        "netcdf", "synthetic", "marine_ie_irish_sea",
+        "noaa_rtofs_global", "copernicus_nws", "copernicus_global"}) {
+    Check(has_current_source(source),
+          std::string("existing current source remains available: ") + source);
+  }
+  Check(has_current_source("offline-tidal"),
+        "Offline Tidal is added to generator capabilities");
+  job_json["schemaVersion"] = 1;
+  job_request["currentSource"] = "offline-tidal";
+  job_request["offlineTidalFile"] = "/tmp/global.xtd";
+  const auto offline_job = eg::ParseGeneratorJob(job_json);
+  Check(offline_job.request.current_source == "offline-tidal" &&
+            offline_job.request.offline_tidal_file ==
+                std::filesystem::path("/tmp/global.xtd"),
+        "job protocol maps the Offline Tidal package path");
   job_json["schemaVersion"] = 2;
   bool rejected_job_schema = false;
   try {
@@ -396,6 +421,52 @@ int main() {
             Near(tpxo_units_cache.v_cm_s.front().imag(), 0.0) &&
             tpxo_units_cache.metadata["velocity_units"].asString() == "cm/s",
         "TPXO metre bathymetry and cm2/s transport convert to cm/s");
+  const auto tpxo_seam_root = Temp("tpxo-seam");
+  const auto tpxo_seam_atlas = tpxo_seam_root / "TPXO10_atlas_v2";
+  WriteTpxoModelFixture(tpxo_seam_atlas, {179.5, 180.0, 180.5});
+  const auto tpxo_seam_grid =
+      eg::BuildRegularGrid({-180.0, -1.0, -179.5, 0.0}, 0.5);
+  const auto tpxo_seam_cache = eg::LoadTpxo10AtlasModel(
+      tpxo_seam_root, {-180.0, -1.0, -179.5, 0.0}, tpxo_seam_grid);
+  Check(!tpxo_seam_cache.u_cm_s.empty() &&
+            std::isfinite(tpxo_seam_cache.u_cm_s.front().real()) &&
+            Near(tpxo_seam_cache.u_cm_s.front().real(), 10.0),
+        "TPXO negative dateline request maps back from 0..360 source axis");
+  std::filesystem::remove_all(tpxo_seam_root);
+  const auto predictor_time =
+      eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
+  const std::vector<std::string> predictor_constituents{"m2", "s2"};
+  const std::vector<std::complex<double>> predictor_coefficients{
+      {10.0, 2.0}, {5.0, -1.0}};
+  const auto predictor = eg::PredictAtlasHarmonicGrid(
+      predictor_constituents, predictor_coefficients, 1, {predictor_time},
+      false);
+  std::vector<std::complex<double>> doubled = predictor_coefficients;
+  for (auto& value : doubled) value *= 2.0;
+  const auto predictor_doubled = eg::PredictAtlasHarmonicGrid(
+      predictor_constituents, doubled, 1, {predictor_time}, false);
+  Check(predictor.size() == 1 &&
+            Near(predictor_doubled.front(), predictor.front() * 2.0),
+        "ATLAS component predictor preserves coefficient units and linearity");
+  const auto predictor_reordered = eg::PredictAtlasHarmonicGrid(
+      {"s2", "m2"},
+      {predictor_coefficients[1], predictor_coefficients[0]}, 1,
+      {predictor_time}, false);
+  Check(Near(predictor_reordered.front(), predictor.front()),
+        "ATLAS component prediction is constituent-order independent");
+  ExpectValidation(
+      [&] {
+        eg::PredictAtlasHarmonicGrid(
+            {"m2", "m2"}, predictor_coefficients, 1, {predictor_time},
+            false);
+      },
+      "duplicate ATLAS harmonic constituents rejected");
+  ExpectValidation(
+      [&] {
+        eg::PredictAtlasHarmonicGrid(
+            {"m2", "s2"}, {{1.0, 0.0}}, 1, {predictor_time}, false);
+      },
+      "malformed ATLAS harmonic dimensions rejected");
   tpxo_units_cache.metadata.removeMember("velocity_units");
   tpxo_units_cache.metadata["pyTMD_version"] = Json::nullValue;
   const auto ambiguous_cache = Temp("ambiguous-native.tpxocache");

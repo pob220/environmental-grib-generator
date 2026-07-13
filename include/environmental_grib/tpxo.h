@@ -47,6 +47,14 @@ Json::Value InspectTpxoCache(const std::filesystem::path& path);
 std::vector<CurrentGrid> PredictTpxoCache(
     const TpxoCache& cache, const std::vector<TimePoint>& times,
     bool infer_minor = true);
+// Predict one harmonic component without changing its units. Coefficients use
+// constituent-major layout: [constituent][point]. Results use
+// time-major layout: [time][point].
+std::vector<double> PredictAtlasHarmonicGrid(
+    const std::vector<std::string>& constituents,
+    const std::vector<std::complex<double>>& coefficient_major,
+    std::size_t point_count, const std::vector<TimePoint>& times,
+    bool infer_minor = true);
 TpxoGenerationResult GenerateFromTpxoCache(
     const std::filesystem::path& input_cache, TimePoint start, int hours,
     int step_hours, const std::filesystem::path& output,

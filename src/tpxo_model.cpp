@@ -170,8 +170,10 @@ RegionalField ReadComponent(const std::filesystem::path& grid_path,
     xwindows.emplace_back(Window(xall,xall.front(),bbox.east,"longitude"),0.0);
   } else {
     double west=bbox.west,east=bbox.east;
-    if(zero_to_360 && west<0.0) { west+=360.0; east+=360.0; }
-    xwindows.emplace_back(Window(xall,west,east,"longitude"),zero_to_360&&west>180.0?-360.0:0.0);
+    const bool shifted_from_negative = zero_to_360 && west < 0.0;
+    if(shifted_from_negative) { west+=360.0; east+=360.0; }
+    xwindows.emplace_back(Window(xall,west,east,"longitude"),
+                          shifted_from_negative ? -360.0 : 0.0);
   }
   const auto yw=Window(yall,bbox.south,bbox.north,"latitude");
   const auto bath_shape=grid.Shape(grid.Var("h"+suffix));

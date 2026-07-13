@@ -20,6 +20,7 @@
 #include "environmental_grib/rtofs.h"
 #include "environmental_grib/sources.h"
 #include "environmental_grib/tpxo.h"
+#include "environmental_grib/xtd.h"
 #include "environmental_grib/weather.h"
 #include "environmental_grib/ukv.h"
 #include "environmental_grib/waves.h"
@@ -315,6 +316,7 @@ int GenerateEnvironment(const std::vector<std::string>& args) {
     else if (arg == "--current-file") request.current_file = RequireValue(args, i, arg);
     else if (arg == "--input-netcdf") request.input_netcdf = RequireValue(args, i, arg);
     else if (arg == "--input-cache") request.input_cache = RequireValue(args, i, arg);
+    else if (arg == "--offline-tidal-file") request.offline_tidal_file = RequireValue(args, i, arg);
     else if (arg == "--model-dir" || arg == "--model-directory") request.tpxo_model_directory = RequireValue(args, i, arg);
     else if (arg == "--no-infer-minor") request.infer_minor_tides = false;
     else if (arg == "--username") request.copernicus_username = RequireValue(args, i, arg);
@@ -543,6 +545,22 @@ int InspectTpxo(const std::vector<std::string>& args) {
   return 0;
 }
 
+int InspectXtdPackage(const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    throw eg::ValidationError("usage: environmental-grib inspect-xtd FILE");
+  }
+  PrintJson(eg::InspectXtd(args[1]));
+  return 0;
+}
+
+int VerifyXtdPackage(const std::vector<std::string>& args) {
+  if (args.size() != 2) {
+    throw eg::ValidationError("usage: environmental-grib verify-xtd FILE");
+  }
+  PrintJson(eg::VerifyXtd(args[1]));
+  return 0;
+}
+
 int PrepareTpxo(const std::vector<std::string>& args) {
   eg::BoundingBox bbox; bool have_bbox=false,overwrite=false;
   double spacing=0.05; std::filesystem::path model_directory,output;
@@ -601,6 +619,8 @@ void Usage() {
             << "  run-job --job FILE --result FILE\n"
             << "  capabilities\n"
             << "  inspect-tpxo-cache FILE\n"
+            << "  inspect-xtd FILE\n"
+            << "  verify-xtd FILE\n"
             << "  prepare-tpxo-cache [options]\n"
             << "  normalize-grib INPUT OUTPUT\n"
             << "  merge-gribs --input LABEL=FILE... --output FILE [--overwrite]\n";
@@ -627,6 +647,8 @@ int main(int argc, char** argv) {
     if (args[0] == "run-job") return RunJob(args);
     if (args[0] == "capabilities") return Capabilities();
     if (args[0] == "inspect-tpxo-cache") return InspectTpxo(args);
+    if (args[0] == "inspect-xtd") return InspectXtdPackage(args);
+    if (args[0] == "verify-xtd") return VerifyXtdPackage(args);
     if (args[0] == "prepare-tpxo-cache") return PrepareTpxo(args);
     if (args[0] == "inspect-grib") return Inspect(args);
     if (args[0] == "normalize-grib") return Normalize(args);

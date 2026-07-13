@@ -461,27 +461,25 @@ std::vector<CurrentGrid> PredictComponentPair(
   if (cache.metadata.get("corrections", "ATLAS").asString() != "ATLAS") {
     throw ValidationError("native TPXO cache prediction currently requires ATLAS corrections");
   }
-  const std::size_t points=cache.grid.size(), nc=cache.constituents.size();
+  const std::size_t points=cache.grid.size();
+  const auto predicted_u = PredictAtlasHarmonicGrid(
+      cache.constituents, cache.u_cm_s, points, times, infer_minor);
+  const auto predicted_v = PredictAtlasHarmonicGrid(
+      cache.constituents, cache.v_cm_s, points, times, infer_minor);
   std::vector<CurrentGrid> result;
   result.reserve(times.size());
-  for (const auto time:times) {
-    const double tide_days=DaysSinceTideEpoch(time);
-    const auto astronomy=AtMjd(tide_days+kMjdTideEpoch);
-    CurrentGrid grid{time,cache.grid,std::vector<double>(points),
+  for (std::size_t t = 0; t < times.size(); ++t) {
+    CurrentGrid grid{times[t],cache.grid,std::vector<double>(points),
                      std::vector<double>(points),std::vector<std::uint8_t>(points)};
     bool any_mask = false;
     for (std::size_t p=0;p<points;++p) {
-      Harmonics uh,vh;
-      bool masked=false;
-      for (std::size_t c=0;c<nc;++c) {
-        const auto u=cache.u_cm_s[c*points+p],v=cache.v_cm_s[c*points+p];
-        if (!std::isfinite(u.real()) || !std::isfinite(u.imag()) ||
-            !std::isfinite(v.real()) || !std::isfinite(v.imag())) { masked=true; break; }
-        uh[cache.constituents[c]]=u; vh[cache.constituents[c]]=v;
+      const double um = predicted_u[t * points + p];
+      const double vm = predicted_v[t * points + p];
+      if (!std::isfinite(um) || !std::isfinite(vm)) {
+        grid.mask[p] = 1;
+        any_mask = true;
+        continue;
       }
-      if (masked) { grid.mask[p] = 1; any_mask = true; continue; }
-      const double um=MajorPrediction(uh,tide_days,astronomy)+(infer_minor?MinorPrediction(uh,astronomy):0);
-      const double vm=MajorPrediction(vh,tide_days,astronomy)+(infer_minor?MinorPrediction(vh,astronomy):0);
       grid.u_mps[p]=um/100.0; grid.v_mps[p]=vm/100.0;
     }
     if (!any_mask) grid.mask.clear();
@@ -491,6 +489,58 @@ std::vector<CurrentGrid> PredictComponentPair(
 }
 
 }  // namespace
+
+std::vector<double> PredictAtlasHarmonicGrid(
+    const std::vector<std::string>& constituents,
+    const std::vector<std::complex<double>>& coefficient_major,
+    std::size_t point_count, const std::vector<TimePoint>& times,
+    bool infer_minor) {
+  if (constituents.empty()) {
+    throw ValidationError("ATLAS harmonic constituent list is empty");
+  }
+  if (point_count == 0 ||
+      coefficient_major.size() != constituents.size() * point_count) {
+    throw ValidationError("ATLAS harmonic coefficient dimensions are inconsistent");
+  }
+  std::set<std::string> unique;
+  for (const auto& constituent : constituents) {
+    if (!Parameters().contains(constituent)) {
+      throw ValidationError("unsupported ATLAS harmonic constituent: " +
+                            constituent);
+    }
+    if (!unique.insert(constituent).second) {
+      throw ValidationError("duplicate ATLAS harmonic constituent: " +
+                            constituent);
+    }
+  }
+  if (times.size() >
+      std::numeric_limits<std::size_t>::max() / point_count) {
+    throw ValidationError("ATLAS harmonic output dimensions overflow");
+  }
+  std::vector<double> output(times.size() * point_count,
+                             std::numeric_limits<double>::quiet_NaN());
+  for (std::size_t t = 0; t < times.size(); ++t) {
+    const double tide_days = DaysSinceTideEpoch(times[t]);
+    const auto astronomy = AtMjd(tide_days + kMjdTideEpoch);
+    for (std::size_t p = 0; p < point_count; ++p) {
+      Harmonics harmonics;
+      bool valid = true;
+      for (std::size_t c = 0; c < constituents.size(); ++c) {
+        const auto value = coefficient_major[c * point_count + p];
+        if (!std::isfinite(value.real()) || !std::isfinite(value.imag())) {
+          valid = false;
+          break;
+        }
+        harmonics.emplace(constituents[c], value);
+      }
+      if (!valid) continue;
+      output[t * point_count + p] =
+          MajorPrediction(harmonics, tide_days, astronomy) +
+          (infer_minor ? MinorPrediction(harmonics, astronomy) : 0.0);
+    }
+  }
+  return output;
+}
 
 TpxoCache LoadTpxoCache(const std::filesystem::path& path) {
   int error=0;

@@ -12,6 +12,8 @@ pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(QHULL_R REQUIRED IMPORTED_TARGET qhull_r)
 pkg_check_modules(BLOSC REQUIRED IMPORTED_TARGET blosc)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
+pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
+pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
 find_path(PROJ_INCLUDE_DIR proj.h HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES include)
 find_library(PROJ_LIBRARY NAMES proj HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES lib)
 
@@ -34,6 +36,7 @@ add_library(environmental_grib_engine STATIC
   src/ukv.cpp
   src/weather.cpp
   src/waves.cpp
+  src/xtd.cpp
 )
 target_compile_features(environmental_grib_engine PUBLIC cxx_std_20)
 target_include_directories(environmental_grib_engine
@@ -44,7 +47,7 @@ target_include_directories(environmental_grib_engine
 target_link_libraries(environmental_grib_engine
   PUBLIC PkgConfig::ECCODES PkgConfig::JSONCPP PkgConfig::NETCDF PkgConfig::CURL
          PkgConfig::QHULL_R BZip2::BZip2
-         PkgConfig::BLOSC PkgConfig::LIBZIP
+         PkgConfig::BLOSC PkgConfig::LIBZIP PkgConfig::SODIUM PkgConfig::ZSTD
 )
 target_compile_options(environmental_grib_engine PRIVATE
   -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
@@ -61,6 +64,13 @@ if(BUILD_TESTING)
   add_executable(environmental_grib_tests tests/engine_tests.cpp)
   target_link_libraries(environmental_grib_tests PRIVATE environmental_grib_engine)
   add_test(NAME environmental_grib_tests COMMAND environmental_grib_tests)
+
+  add_executable(environmental_grib_xtd_tests
+    tests/xtd_tests.cpp
+    tests/xtd_test_support.cpp
+  )
+  target_link_libraries(environmental_grib_xtd_tests PRIVATE environmental_grib_engine)
+  add_test(NAME environmental_grib_xtd_tests COMMAND environmental_grib_xtd_tests)
 endif()
 
 install(TARGETS environmental_grib_engine environmental-grib

@@ -102,6 +102,7 @@ GeneratorJob ParseGeneratorJob(const Json::Value& value) {
   OptionalPath(request, "currentFile", &job.request.current_file);
   OptionalPath(request, "inputNetcdf", &job.request.input_netcdf);
   OptionalPath(request, "inputCache", &job.request.input_cache);
+  OptionalPath(request, "offlineTidalFile", &job.request.offline_tidal_file);
   OptionalPath(request, "tpxoModelDirectory",
                &job.request.tpxo_model_directory);
   job.request.auto_prepare_tpxo_cache =
@@ -145,7 +146,7 @@ Json::Value GeneratorCapabilitiesJson() {
   value["waveProviders"] =
       StringArray({"gfs_wave", "copernicus_global_waves"});
   value["currentSources"] = StringArray(
-      {"none", "auto", "existing-file", "tpxo", "tpxo-cache",
+      {"none", "auto", "existing-file", "offline-tidal", "tpxo", "tpxo-cache",
        "netcdf", "synthetic", "marine_ie_irish_sea", "noaa_rtofs_global",
        "copernicus_nws", "copernicus_global"});
   value["progressProtocol"] = "json-lines-v1";
