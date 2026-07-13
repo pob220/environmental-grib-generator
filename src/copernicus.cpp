@@ -105,7 +105,7 @@ Json::Value ParseJson(const std::vector<unsigned char>& bytes,
 
 std::string QuerySuffix(const std::string& username) {
   std::ostringstream value;
-  value << "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.0";
+  value << "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.1";
   if (!username.empty()) {
     value << "&x-cop-user=";
     for (unsigned char c : username) {

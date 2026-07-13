@@ -171,6 +171,28 @@ void Progress(const ProgressCallback& callback, const std::string& stage,
   if (callback) callback(stage, details);
 }
 
+bool TransientCurlError(CURLcode status) {
+  switch (status) {
+    case CURLE_COULDNT_RESOLVE_PROXY:
+    case CURLE_COULDNT_RESOLVE_HOST:
+    case CURLE_COULDNT_CONNECT:
+    case CURLE_PARTIAL_FILE:
+    case CURLE_HTTP2:
+    case CURLE_OPERATION_TIMEDOUT:
+    case CURLE_SEND_ERROR:
+    case CURLE_RECV_ERROR:
+    case CURLE_GOT_NOTHING:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool TransientHttpStatus(long status) {
+  return status == 408 || status == 425 || status == 429 ||
+         (status >= 500 && status <= 599);
+}
+
 std::vector<unsigned char> DecompressBzip2(
     const std::vector<unsigned char>& compressed) {
   if (compressed.empty()) throw ValidationError("DWD ICON-EU download returned empty response");
@@ -203,6 +225,119 @@ Json::Value BboxJson(const BoundingBox& bbox) {
 }
 
 }  // namespace
+
+std::string SanitizedHttpResource(const std::string& url) {
+  const auto query = url.find('?');
+  std::string result = url.substr(0, query);
+  const auto scheme = result.find("://");
+  if (scheme != std::string::npos) {
+    const auto authority = scheme + 3;
+    const auto path = result.find('/', authority);
+    const auto userinfo = result.find('@', authority);
+    if (userinfo != std::string::npos &&
+        (path == std::string::npos || userinfo < path)) {
+      result.erase(authority, userinfo - authority + 1);
+    }
+  }
+  return result;
+}
+
+HttpGet MakeRetryingHttpGet(HttpGet download, const std::string& provider,
+                            ProgressCallback progress, HttpRetryPolicy policy,
+                            RetrySleeper sleeper) {
+  if (!download) download = CurlHttpGet;
+  if (policy.max_attempts < 1 || policy.initial_delay_ms < 0 ||
+      policy.maximum_delay_ms < policy.initial_delay_ms) {
+    throw ValidationError("invalid HTTP retry policy");
+  }
+  if (!sleeper) {
+    sleeper = [](int milliseconds) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+    };
+  }
+  return [download = std::move(download), provider, progress = std::move(progress),
+          policy, sleeper = std::move(sleeper)](
+             const std::string& url, double timeout_seconds) {
+    const std::string resource = SanitizedHttpResource(url);
+    int delay_ms = policy.initial_delay_ms;
+    for (int attempt = 1;; ++attempt) {
+      Json::Value details(Json::objectValue);
+      details["provider"] = provider;
+      details["resource"] = resource;
+      details["attempt"] = attempt;
+      details["maxAttempts"] = policy.max_attempts;
+      details["state"] = "requesting";
+      Progress(progress, "downloading " + provider, details);
+      try {
+        return download(url, timeout_seconds);
+      } catch (const HttpDownloadError& error) {
+        if (!error.transient() || attempt >= policy.max_attempts) {
+          throw HttpDownloadError(provider + " download failed after " +
+                                      std::to_string(attempt) +
+                                      (attempt == 1 ? " attempt: " : " attempts: ") +
+                                      error.what() + " [" + resource + "]",
+                                  error.transient());
+        }
+        details["state"] = "retrying";
+        details["delayMs"] = delay_ms;
+        details["error"] = error.what();
+        Progress(progress, "retrying " + provider + " download", details);
+        sleeper(delay_ms);
+        delay_ms = std::min(delay_ms * 2, policy.maximum_delay_ms);
+      }
+    }
+  };
+}
+
+HttpGetRange MakeRetryingHttpGetRange(
+    HttpGetRange download, const std::string& provider,
+    ProgressCallback progress, HttpRetryPolicy policy, RetrySleeper sleeper) {
+  if (!download) download = CurlHttpGetRange;
+  if (policy.max_attempts < 1 || policy.initial_delay_ms < 0 ||
+      policy.maximum_delay_ms < policy.initial_delay_ms) {
+    throw ValidationError("invalid HTTP retry policy");
+  }
+  if (!sleeper) {
+    sleeper = [](int milliseconds) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+    };
+  }
+  return [download = std::move(download), provider, progress = std::move(progress),
+          policy, sleeper = std::move(sleeper)](
+             const std::string& url, std::size_t start, std::size_t end,
+             double timeout_seconds) {
+    const std::string resource = SanitizedHttpResource(url);
+    int delay_ms = policy.initial_delay_ms;
+    for (int attempt = 1;; ++attempt) {
+      Json::Value details(Json::objectValue);
+      details["provider"] = provider;
+      details["resource"] = resource;
+      details["rangeStart"] = Json::UInt64(start);
+      details["rangeEnd"] = Json::UInt64(end);
+      details["attempt"] = attempt;
+      details["maxAttempts"] = policy.max_attempts;
+      details["state"] = "requesting";
+      Progress(progress, "downloading " + provider, details);
+      try {
+        return download(url, start, end, timeout_seconds);
+      } catch (const HttpDownloadError& error) {
+        if (!error.transient() || attempt >= policy.max_attempts) {
+          throw HttpDownloadError(provider + " range download failed after " +
+                                      std::to_string(attempt) +
+                                      (attempt == 1 ? " attempt: " : " attempts: ") +
+                                      error.what() + " [" + resource + "]",
+                                  error.transient());
+        }
+        details["state"] = "retrying";
+        details["delayMs"] = delay_ms;
+        details["error"] = error.what();
+        Progress(progress, "retrying " + provider + " download", details);
+        sleeper(delay_ms);
+        delay_ms = std::min(delay_ms * 2, policy.maximum_delay_ms);
+      }
+    }
+  };
+}
 
 std::string GFSCycle::Directory() const {
   return "/gfs." + date + "/" + cycle + "/atmos";
@@ -325,8 +460,14 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
   const CURLcode status = curl_easy_perform(curl);
   long response = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
   curl_easy_cleanup(curl);
-  if (status != CURLE_OK) throw ValidationError("HTTP download failed: " + std::string(curl_easy_strerror(status)));
-  if (response < 200 || response >= 300) throw ValidationError("HTTP download failed with status " + std::to_string(response));
+  if (status != CURLE_OK)
+    throw HttpDownloadError("HTTP download failed: " +
+                                std::string(curl_easy_strerror(status)),
+                            TransientCurlError(status));
+  if (response < 200 || response >= 300)
+    throw HttpDownloadError(
+        "HTTP download failed with status " + std::to_string(response),
+        TransientHttpStatus(response));
   return output;
 }
 
@@ -571,9 +712,18 @@ std::vector<unsigned char> CurlHttpGetRange(const std::string& url,
   const CURLcode status = curl_easy_perform(curl);
   long response = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
   curl_easy_cleanup(curl);
-  if (status != CURLE_OK) throw ValidationError("HTTP range download failed: " + std::string(curl_easy_strerror(status)));
+  if (status != CURLE_OK)
+    throw HttpDownloadError("HTTP range download failed: " +
+                                std::string(curl_easy_strerror(status)),
+                            TransientCurlError(status));
+  if (response < 200 || response >= 300)
+    throw HttpDownloadError(
+        "HTTP range download failed with status " + std::to_string(response),
+        TransientHttpStatus(response));
   const std::size_t expected = end - start + 1;
-  if (output.size() != expected || (response != 206 && output.size() != expected)) throw ValidationError("short or ignored HTTP byte range response");
+  if (output.size() != expected ||
+      (response != 206 && output.size() != expected))
+    throw HttpDownloadError("short or ignored HTTP byte range response", true);
   return output;
 }
 

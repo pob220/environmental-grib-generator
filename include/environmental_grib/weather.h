@@ -65,6 +65,24 @@ using HttpGetRange = std::function<std::vector<unsigned char>(
     const std::string&, std::size_t, std::size_t, double)>;
 using ProgressCallback = std::function<void(const std::string&, const Json::Value&)>;
 
+struct HttpRetryPolicy {
+  int max_attempts{3};
+  int initial_delay_ms{1000};
+  int maximum_delay_ms{4000};
+};
+
+using RetrySleeper = std::function<void(int)>;
+
+std::string SanitizedHttpResource(const std::string& url);
+HttpGet MakeRetryingHttpGet(
+    HttpGet download, const std::string& provider,
+    ProgressCallback progress = {}, HttpRetryPolicy policy = {},
+    RetrySleeper sleeper = {});
+HttpGetRange MakeRetryingHttpGetRange(
+    HttpGetRange download, const std::string& provider,
+    ProgressCallback progress = {}, HttpRetryPolicy policy = {},
+    RetrySleeper sleeper = {});
+
 std::vector<WeatherProvider> ListWeatherProviders();
 std::vector<int> ForecastHourSequence(int hours, int step_hours);
 std::map<std::string, std::string> GfsVariablesForPreset(const std::string& preset);

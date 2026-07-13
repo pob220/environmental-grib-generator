@@ -33,7 +33,7 @@ Json::Value Parse(const std::vector<unsigned char>& bytes,
 
 std::string Suffix(const std::string& username) {
   std::string result =
-      "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.0";
+      "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.1";
   if (!username.empty()) {
     result += "&x-cop-user=";
     for (unsigned char c : username) {

@@ -2,7 +2,9 @@
 
 #include <chrono>
 #include <fstream>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <unistd.h>
 
 #include "environmental_grib/error.h"
@@ -40,6 +42,229 @@ class Workspace {
   std::filesystem::path path_;
   bool keep_{};
 };
+
+constexpr auto kResumeLifetime = std::chrono::hours(3);
+
+std::string FingerprintHash(const std::string& value) {
+  std::uint64_t hash = 14695981039346656037ULL;
+  for (const unsigned char byte : value) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  std::ostringstream output;
+  output << std::hex << std::setw(16) << std::setfill('0') << hash;
+  return output.str();
+}
+
+Json::Value ReadJson(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw ValidationError("cannot open resume metadata: " + path.string());
+  Json::CharReaderBuilder builder;
+  Json::Value value;
+  std::string errors;
+  if (!Json::parseFromStream(builder, input, &value, &errors))
+    throw ValidationError("invalid resume metadata: " + errors);
+  return value;
+}
+
+void WriteJsonAtomic(const std::filesystem::path& path,
+                     const Json::Value& value) {
+  const auto temporary = path.string() + ".tmp-" + std::to_string(::getpid());
+  try {
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "  ";
+    {
+      std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+      if (!output)
+        throw ValidationError("cannot create resume metadata: " + temporary);
+      output << Json::writeString(builder, value) << '\n';
+      if (!output)
+        throw ValidationError("cannot write resume metadata: " + temporary);
+    }
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    std::filesystem::rename(temporary, path);
+  } catch (...) {
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw;
+  }
+}
+
+class ResumeCache {
+ public:
+  ResumeCache(const std::filesystem::path& output, ProgressCallback progress)
+      : progress_(std::move(progress)) {
+    root_ = output.parent_path().empty() ? std::filesystem::current_path()
+                                         : output.parent_path();
+    root_ /= ".environmental-grib-resume";
+  }
+
+  struct Restored {
+    std::filesystem::path path;
+    std::optional<std::string> selected_cycle;
+  };
+
+  std::optional<Restored> Restore(const std::string& stage,
+                                  const std::string& fingerprint,
+                                  const std::filesystem::path& target) {
+    const auto [data, metadata] = Paths(stage, fingerprint);
+    const bool have_data = std::filesystem::is_regular_file(data);
+    const bool have_metadata = std::filesystem::is_regular_file(metadata);
+    if (have_data != have_metadata) {
+      RemoveFiles(data, metadata);
+      return std::nullopt;
+    }
+    if (!have_data)
+      return std::nullopt;
+    try {
+      const auto value = ReadJson(metadata);
+      const auto created = value["createdEpochSeconds"].asInt64();
+      const auto age = std::chrono::system_clock::now() -
+                       std::chrono::system_clock::time_point{
+                           std::chrono::seconds(created)};
+      if (value["schemaVersion"].asInt() != 1 ||
+          value["stage"].asString() != stage ||
+          value["fingerprint"].asString() != fingerprint ||
+          age < std::chrono::seconds::zero() || age > kResumeLifetime) {
+        RemoveFiles(data, metadata);
+        return std::nullopt;
+      }
+      const auto scan = ScanGribMessages(data);
+      if (scan.message_count == 0 ||
+          scan.message_count != value["messageCount"].asUInt64() ||
+          scan.byte_count != value["byteCount"].asUInt64()) {
+        RemoveFiles(data, metadata);
+        return std::nullopt;
+      }
+      std::filesystem::copy_file(
+          data, target, std::filesystem::copy_options::overwrite_existing);
+      Json::Value details(Json::objectValue);
+      details["stage"] = stage;
+      details["messageCount"] = Json::UInt64(scan.message_count);
+      details["byteCount"] = Json::UInt64(scan.byte_count);
+      details["detail"] = "validated completed " + stage + " from prior failed job";
+      if (progress_) progress_("reusing completed " + stage, details);
+      touched_.emplace_back(data, metadata);
+      Restored result{target, std::nullopt};
+      if (value.isMember("selectedCycle"))
+        result.selected_cycle = value["selectedCycle"].asString();
+      return result;
+    } catch (const std::exception&) {
+      RemoveFiles(data, metadata);
+      return std::nullopt;
+    }
+  }
+
+  void Save(const std::string& stage, const std::string& fingerprint,
+            const std::filesystem::path& source,
+            const std::optional<std::string>& selected_cycle = std::nullopt) {
+    const auto [data, metadata] = Paths(stage, fingerprint);
+    const auto temporary = data.string() + ".tmp-" + std::to_string(::getpid());
+    try {
+      const auto scan = ScanGribMessages(source);
+      if (scan.message_count == 0) return;
+      std::filesystem::create_directories(root_);
+      std::filesystem::copy_file(
+          source, temporary, std::filesystem::copy_options::overwrite_existing);
+      std::error_code ignored;
+      std::filesystem::remove(data, ignored);
+      std::filesystem::rename(temporary, data);
+      Json::Value value(Json::objectValue);
+      value["schemaVersion"] = 1;
+      value["stage"] = stage;
+      value["fingerprint"] = fingerprint;
+      value["createdEpochSeconds"] = Json::Int64(
+          std::chrono::duration_cast<std::chrono::seconds>(
+              std::chrono::system_clock::now().time_since_epoch())
+              .count());
+      value["messageCount"] = Json::UInt64(scan.message_count);
+      value["byteCount"] = Json::UInt64(scan.byte_count);
+      if (selected_cycle) value["selectedCycle"] = *selected_cycle;
+      WriteJsonAtomic(metadata, value);
+      touched_.emplace_back(data, metadata);
+      Json::Value details(Json::objectValue);
+      details["stage"] = stage;
+      details["messageCount"] = Json::UInt64(scan.message_count);
+      details["byteCount"] = Json::UInt64(scan.byte_count);
+      details["detail"] = "saved completed " + stage + " for failure recovery";
+      if (progress_) progress_("checkpointing completed " + stage, details);
+    } catch (const std::exception& error) {
+      std::error_code ignored;
+      std::filesystem::remove(temporary, ignored);
+      Json::Value details(Json::objectValue);
+      details["stage"] = stage;
+      details["detail"] =
+          "generation will continue, but this stage could not be checkpointed";
+      details["error"] = error.what();
+      if (progress_) progress_("checkpoint unavailable", details);
+    }
+  }
+
+  void Complete() {
+    for (const auto& [data, metadata] : touched_) RemoveFiles(data, metadata);
+    std::error_code ignored;
+    std::filesystem::remove(root_, ignored);
+    touched_.clear();
+  }
+
+ private:
+  std::pair<std::filesystem::path, std::filesystem::path> Paths(
+      const std::string& stage, const std::string& fingerprint) const {
+    const auto base = stage + "-" + FingerprintHash(fingerprint);
+    return {root_ / (base + ".grb"), root_ / (base + ".json")};
+  }
+
+  static void RemoveFiles(const std::filesystem::path& data,
+                          const std::filesystem::path& metadata) {
+    std::error_code ignored;
+    std::filesystem::remove(data, ignored);
+    std::filesystem::remove(metadata, ignored);
+  }
+
+  std::filesystem::path root_;
+  ProgressCallback progress_;
+  std::vector<std::pair<std::filesystem::path, std::filesystem::path>> touched_;
+};
+
+std::string CommonFingerprint(const EnvironmentRequest& request) {
+  std::ostringstream value;
+  value << std::setprecision(17) << request.bbox.west << ','
+        << request.bbox.south << ',' << request.bbox.east << ','
+        << request.bbox.north << '|' << FormatUtcDateTime(request.start) << '|'
+        << request.hours << '|'
+        << std::filesystem::absolute(request.output).lexically_normal().string();
+  return value.str();
+}
+
+std::string WeatherFingerprint(const EnvironmentRequest& request) {
+  std::ostringstream value;
+  value << "weather|" << CommonFingerprint(request) << '|'
+        << request.weather_provider << '|' << request.step_hours << '|'
+        << request.cycle << '|' << request.date.value_or("") << '|'
+        << request.weather_preset << '|' << std::setprecision(17)
+        << request.weather_grid_spacing_deg;
+  return value.str();
+}
+
+std::string WaveFingerprint(const EnvironmentRequest& request,
+                            const std::optional<std::string>& coupled_cycle) {
+  std::ostringstream value;
+  value << "waves|" << CommonFingerprint(request) << '|'
+        << request.wave_provider << '|' << request.wave_step_hours << '|'
+        << coupled_cycle.value_or("independent-auto");
+  return value.str();
+}
+
+std::string CurrentFingerprint(const EnvironmentRequest& request,
+                               const std::string& current_source) {
+  std::ostringstream value;
+  value << "current|" << CommonFingerprint(request) << '|' << current_source
+        << '|' << request.step_hours << '|' << std::setprecision(17)
+        << request.current_grid_spacing_deg << '|' << request.cycle << '|'
+        << request.date.value_or("");
+  return value.str();
+}
 
 std::filesystem::path CopyValidated(const std::filesystem::path& source,
                                     const std::filesystem::path& target) {
@@ -115,11 +340,50 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
             Json::Value(Json::objectValue)};
   }
   Workspace workspace(request.output, request.keep_intermediate);
+  ResumeCache resume(request.output, progress);
   std::vector<std::pair<std::string, std::filesystem::path>> streams;
   std::optional<std::string> selected_cycle;
   Json::Value diagnostics(Json::objectValue);
 
-  if (request.weather_provider == "existing-file") {
+  const auto has_stream = [&](const std::string& label) {
+    return std::any_of(streams.begin(), streams.end(),
+                       [&](const auto& stream) { return stream.first == label; });
+  };
+  const bool coupled_gfs = request.weather_provider == "gfs" &&
+                           request.include_waves &&
+                           request.wave_provider == "gfs_wave";
+  const bool cacheable_weather = request.weather_provider != "none" &&
+                                 request.weather_provider != "existing-file" &&
+                                 !coupled_gfs;
+  const std::string weather_fingerprint = WeatherFingerprint(request);
+  bool restored_weather = false;
+  if (coupled_gfs) {
+    if (const auto cached_weather = resume.Restore(
+            "weather", weather_fingerprint, workspace.File("weather.grb"));
+        cached_weather && cached_weather->selected_cycle) {
+      const auto coupled_wave_fingerprint =
+          WaveFingerprint(request, cached_weather->selected_cycle);
+      if (const auto cached_waves = resume.Restore(
+              "waves", coupled_wave_fingerprint,
+              workspace.File("waves.grb"))) {
+        streams.emplace_back("weather", cached_weather->path);
+        streams.emplace_back("waves", cached_waves->path);
+        selected_cycle = cached_weather->selected_cycle;
+        restored_weather = true;
+      }
+    }
+  } else if (cacheable_weather) {
+    if (const auto cached = resume.Restore(
+            "weather", weather_fingerprint, workspace.File("weather.grb"))) {
+      streams.emplace_back("weather", cached->path);
+      selected_cycle = cached->selected_cycle;
+      restored_weather = true;
+    }
+  }
+
+  if (restored_weather) {
+    // The validated checkpoint is already in the workspace and stream list.
+  } else if (request.weather_provider == "existing-file") {
     if (!request.weather_file) throw ValidationError("existing weather provider requires weather-file");
     streams.emplace_back("weather", CopyValidated(*request.weather_file, workspace.File("weather.grb")));
   } else if (request.weather_provider == "gfs") {
@@ -134,11 +398,17 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
         try {
           GFSRequest atmosphere = probe;
           atmosphere.cycle = candidate.cycle; atmosphere.date = candidate.date;
-          const auto weather = GenerateGfs(atmosphere, http_get, now, progress);
+          const auto weather = GenerateGfs(
+              atmosphere,
+              MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
+              now, progress);
           GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
                            request.wave_step_hours, candidate.cycle, candidate.date,
                            true, 60.0, 1, false, "routing", true};
-          const auto wave = GenerateGfs(waves, http_get, now, progress);
+          const auto wave = GenerateGfs(
+              waves,
+              MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
+              now, progress);
           streams.emplace_back("weather", weather.output);
           streams.emplace_back("waves", wave.output);
           selected_cycle = candidate.CycleTime();
@@ -151,12 +421,20 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
           std::filesystem::remove(workspace.File("waves.grb"), ignored);
         }
       }
-      if (!complete) throw ValidationError("No common complete GFS atmosphere/wave cycle was available");
+      if (!complete) {
+        std::ostringstream message;
+        message << "No common complete GFS atmosphere/wave cycle was available. Tried: ";
+        for (const auto& error : errors) message << error << "; ";
+        throw ValidationError(message.str());
+      }
     } else {
       GFSRequest weather{request.bbox, weather_path, request.hours, request.step_hours,
                          request.cycle, request.date, true, 60.0, 8, false,
                          request.weather_preset, false};
-      const auto result = GenerateGfs(weather, http_get, now, progress);
+      const auto result = GenerateGfs(
+          weather,
+          MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress), now,
+          progress);
       streams.emplace_back("weather", result.output);
       selected_cycle = result.cycle.CycleTime();
     }
@@ -171,91 +449,144 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     ukv.overwrite = true;
     ukv.preset = request.weather_preset;
     ukv.grid_spacing_deg = request.weather_grid_spacing_deg;
-    const auto weather = GenerateUkv(ukv, http_get, now, progress);
+    const auto weather = GenerateUkv(
+        ukv,
+        MakeRetryingHttpGet(http_get, "Met Office UKV weather", progress),
+        now, progress);
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
-    if (request.include_waves) {
-      if (request.wave_provider == "gfs_wave") {
-        GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
-                         request.wave_step_hours, "auto", std::nullopt, true,
-                         60.0, 8, false, "routing", true};
-        streams.emplace_back("waves", GenerateGfs(waves, http_get, now, progress).output);
-      }
-    }
   } else if (request.weather_provider == "dwd_icon_eu" ||
              request.weather_provider == "noaa_hrrr") {
     GFSRequest icon{request.bbox, workspace.File("weather.grb"), request.hours,
                     request.step_hours, request.cycle, request.date, true, 90.0,
                     8, false, request.weather_preset, false};
+    const std::string provider = request.weather_provider == "dwd_icon_eu"
+                                     ? "DWD ICON-EU weather"
+                                     : "NOAA HRRR weather";
     const auto weather = request.weather_provider == "dwd_icon_eu"
-                             ? GenerateDwdIconEu(icon, http_get, now, progress)
-                             : GenerateHrrr(icon, http_get, {}, now, progress);
+                             ? GenerateDwdIconEu(
+                                   icon, MakeRetryingHttpGet(http_get, provider, progress),
+                                   now, progress)
+                             : GenerateHrrr(
+                                   icon, MakeRetryingHttpGet(http_get, provider, progress),
+                                   MakeRetryingHttpGetRange({}, provider, progress),
+                                   now, progress);
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
-    if (request.include_waves && request.wave_provider == "gfs_wave") {
-      GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
-                       request.wave_step_hours, "auto", std::nullopt, true,
-                       60.0, 8, false, "routing", true};
-      const auto wave = GenerateGfs(waves, http_get, now, progress);
-      streams.emplace_back("waves", wave.output);
-    }
   } else if (request.weather_provider == "ecmwf_ifs_open" ||
              request.weather_provider == "ecmwf_aifs_open") {
     GFSRequest ecmwf{request.bbox, workspace.File("weather.grb"), request.hours,
                      request.step_hours, request.cycle, request.date, true,
                      180.0, 8, false, request.weather_preset, false};
+    const std::string provider = request.weather_provider == "ecmwf_aifs_open"
+                                     ? "ECMWF AIFS weather"
+                                     : "ECMWF IFS weather";
     const auto weather = GenerateEcmwfOpenData(
-        ecmwf, request.weather_provider == "ecmwf_aifs_open", http_get, {}, now,
-        progress);
+        ecmwf, request.weather_provider == "ecmwf_aifs_open",
+        MakeRetryingHttpGet(http_get, provider, progress),
+        MakeRetryingHttpGetRange({}, provider, progress), now, progress);
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
-    if (request.include_waves && request.wave_provider == "gfs_wave") {
-      GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
-                       request.wave_step_hours, "auto", std::nullopt, true,
-                       60.0, 8, false, "routing", true};
-      const auto wave = GenerateGfs(waves, http_get, now, progress);
-      streams.emplace_back("waves", wave.output);
-    }
   } else if (request.weather_provider != "none") {
     throw UnsupportedSourceError("native weather provider is not yet available: " + request.weather_provider);
   }
 
-  const auto has_stream = [&](const std::string& label) {
-    return std::any_of(streams.begin(), streams.end(),
-                       [&](const auto& stream) { return stream.first == label; });
-  };
+  if (cacheable_weather && !restored_weather && has_stream("weather")) {
+    resume.Save("weather", weather_fingerprint, workspace.File("weather.grb"),
+                selected_cycle);
+  }
+  if (coupled_gfs && !restored_weather && has_stream("weather") &&
+      has_stream("waves") && selected_cycle) {
+    resume.Save("weather", weather_fingerprint, workspace.File("weather.grb"),
+                selected_cycle);
+    resume.Save("waves", WaveFingerprint(request, selected_cycle),
+                workspace.File("waves.grb"), selected_cycle);
+  }
+  const bool cacheable_waves = request.include_waves && !coupled_gfs;
+  const std::string wave_fingerprint = WaveFingerprint(request, std::nullopt);
+  bool restored_waves = false;
+  if (cacheable_waves && !has_stream("waves")) {
+    if (const auto cached = resume.Restore(
+            "waves", wave_fingerprint, workspace.File("waves.grb"))) {
+      streams.emplace_back("waves", cached->path);
+      if (!selected_cycle) selected_cycle = cached->selected_cycle;
+      restored_waves = true;
+    }
+  }
+
+  std::optional<std::string> wave_cycle;
   if (request.include_waves && request.wave_provider == "gfs_wave" &&
       !has_stream("waves")) {
     GFSRequest waves{request.bbox, workspace.File("waves.grb"), request.hours,
                      request.wave_step_hours, request.cycle, request.date, true,
                      60.0, 8, false, "routing", true};
-    const auto wave = GenerateGfs(waves, http_get, now, progress);
+    if (request.weather_provider != "gfs") {
+      waves.cycle = "auto";
+      waves.date = std::nullopt;
+    }
+    const auto wave = GenerateGfs(
+        waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress), now,
+        progress);
     streams.emplace_back("waves", wave.output);
+    wave_cycle = wave.cycle.CycleTime();
     if (!selected_cycle) selected_cycle = wave.cycle.CycleTime();
   }
 
   if (request.include_waves &&
-      request.wave_provider == "copernicus_global_waves") {
+      request.wave_provider == "copernicus_global_waves" &&
+      !has_stream("waves")) {
+    Report(progress, "authenticating Copernicus Global Waves",
+           "validating Copernicus Marine credentials");
     streams.emplace_back(
         "waves",
         GenerateCopernicusGlobalWaves(
             request.bbox, request.start, request.hours, request.wave_step_hours,
             request.copernicus_username, request.copernicus_password,
             workspace.File("waves.grb"), request.weather_grid_spacing_deg, true,
-            http_get ? BinaryDownload(http_get) : BinaryDownload{})
+            BinaryDownload(MakeRetryingHttpGet(
+                http_get, "Copernicus Global Waves", progress)))
             .output);
-  } else if (request.include_waves && request.wave_provider != "gfs_wave") {
+  } else if (request.include_waves && request.wave_provider != "gfs_wave" &&
+             request.wave_provider != "copernicus_global_waves") {
     throw UnsupportedSourceError("native wave provider is not available: " +
                                  request.wave_provider);
   }
 
-  if (current_source == "existing-file") {
+  if (cacheable_waves && !restored_waves && has_stream("waves")) {
+    resume.Save("waves", wave_fingerprint, workspace.File("waves.grb"),
+                wave_cycle);
+  }
+
+  const bool cacheable_current =
+      current_source == "marine_ie_irish_sea" ||
+      current_source == "copernicus_nws" ||
+      current_source == "copernicus_global" ||
+      current_source == "noaa_rtofs_global";
+  const std::string current_fingerprint =
+      CurrentFingerprint(request, current_source);
+  bool restored_current = false;
+  if (cacheable_current) {
+    if (const auto cached = resume.Restore(
+            "current", current_fingerprint, workspace.File("current.grb"))) {
+      streams.emplace_back("current", cached->path);
+      restored_current = true;
+    }
+  }
+
+  if (restored_current) {
+    // The validated checkpoint is already in the workspace and stream list.
+  } else if (current_source == "existing-file") {
     if (!request.current_file) throw ValidationError("existing current source requires current-file");
     streams.emplace_back("current", CopyValidated(*request.current_file, workspace.File("current.grb")));
   } else if (current_source == "marine_ie_irish_sea") {
     Report(progress, "downloading current", current_source);
-    streams.emplace_back("current", DownloadMarineIe(workspace.File("current.grb"), true,
-                                                      http_get ? BinaryDownload(http_get) : BinaryDownload{}).output);
+    streams.emplace_back(
+        "current",
+        DownloadMarineIe(
+            workspace.File("current.grb"), true,
+            BinaryDownload(MakeRetryingHttpGet(
+                http_get, "Marine.ie Irish Sea current", progress)))
+            .output);
   } else if (current_source == "copernicus_nws" ||
              current_source == "copernicus_global") {
     CopernicusRequest current;
@@ -269,11 +600,18 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     current.output = workspace.File("current.grb");
     current.overwrite = true;
     current.provider = current_source;
+    const std::string provider = current_source == "copernicus_global"
+                                     ? "Copernicus Global current"
+                                     : "Copernicus NWS current";
+    Report(progress, "authenticating " + provider,
+           "validating Copernicus Marine credentials");
+    const auto download = BinaryDownload(
+        MakeRetryingHttpGet(http_get, provider, progress));
     const auto generated = current_source == "copernicus_global"
                                ? GenerateCopernicusGlobal(
-                                     current, http_get ? BinaryDownload(http_get) : BinaryDownload{})
+                                     current, download)
                                : GenerateCopernicusNws(
-                                     current, http_get ? BinaryDownload(http_get) : BinaryDownload{});
+                                     current, download);
     streams.emplace_back("current", generated.output);
   } else if (current_source == "noaa_rtofs_global") {
     RtofsRequest current;
@@ -288,9 +626,13 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                      : request.download_directory;
     current.grid_spacing_deg = request.current_grid_spacing_deg;
     current.overwrite = true;
-    streams.emplace_back("current", GenerateRtofs(
-        current, {},
-        http_get ? BinaryDownload(http_get) : BinaryDownload{}).output);
+    streams.emplace_back(
+        "current",
+        GenerateRtofs(
+            current, {},
+            BinaryDownload(MakeRetryingHttpGet(
+                http_get, "NOAA RTOFS current", progress)))
+            .output);
   } else if (current_source == "netcdf") {
     if (!request.input_netcdf) throw ValidationError("netcdf current source requires input-netcdf");
     const auto grid = BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
@@ -397,11 +739,16 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     throw UnsupportedSourceError("native current provider is not yet available: " + current_source);
   }
 
+  if (cacheable_current && !restored_current && has_stream("current")) {
+    resume.Save("current", current_fingerprint, workspace.File("current.grb"));
+  }
+
   if (streams.empty()) throw ValidationError("generation produced no environmental streams");
   Report(progress, "merging environmental GRIB", std::to_string(streams.size()) + " streams");
   const auto merged = MergeGribStreams(streams, request.output, request.overwrite);
   std::vector<std::filesystem::path> input_paths;
   for (const auto& [label, path] : streams) { (void)label; input_paths.push_back(path); }
+  resume.Complete();
   return {request.output, merged.output_message_count, merged.byte_count,
           request.weather_provider, request.include_waves ? request.wave_provider : "none",
           current_source, selected_cycle, input_paths, merged.inspection,

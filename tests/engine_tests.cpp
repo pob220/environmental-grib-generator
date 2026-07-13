@@ -339,6 +339,50 @@ int main() {
             capabilities["operations"][0].asString() ==
                 "generateEnvironment",
         "job protocol capabilities");
+  int retry_attempts = 0;
+  std::vector<int> retry_delays;
+  std::vector<std::pair<std::string, Json::Value>> retry_progress;
+  const auto retrying_download = eg::MakeRetryingHttpGet(
+      [&](const std::string&, double) -> std::vector<unsigned char> {
+        ++retry_attempts;
+        if (retry_attempts < 3)
+          throw eg::HttpDownloadError("simulated timeout", true);
+        return {1, 2, 3};
+      },
+      "test provider",
+      [&](const std::string& stage, const Json::Value& details) {
+        retry_progress.emplace_back(stage, details);
+      },
+      {.max_attempts = 3, .initial_delay_ms = 5, .maximum_delay_ms = 10},
+      [&](int delay) { retry_delays.push_back(delay); });
+  const auto retry_bytes = retrying_download(
+      "https://example.invalid/data?username=secret", 1.0);
+  Check(retry_bytes.size() == 3 && retry_attempts == 3 &&
+            retry_delays == std::vector<int>({5, 10}),
+        "transient HTTP failures use bounded exponential retry");
+  Check(!retry_progress.empty() &&
+            retry_progress.back().second["resource"].asString() ==
+                "https://example.invalid/data" &&
+            retry_progress.back().second["resource"].asString().find("secret") ==
+                std::string::npos,
+        "retry progress identifies provider resource without query secrets");
+  Check(eg::SanitizedHttpResource(
+            "ftp://username:password@example.invalid/path?token=secret") ==
+            "ftp://example.invalid/path",
+        "retry diagnostics remove URL credentials and query secrets");
+  int permanent_attempts = 0;
+  const auto permanent_failure = eg::MakeRetryingHttpGet(
+      [&](const std::string&, double) -> std::vector<unsigned char> {
+        ++permanent_attempts;
+        throw eg::HttpDownloadError("HTTP status 404", false);
+      },
+      "test provider", {},
+      {.max_attempts = 3, .initial_delay_ms = 0, .maximum_delay_ms = 0},
+      [](int) {});
+  ExpectValidation(
+      [&] { permanent_failure("https://example.invalid/missing", 1.0); },
+      "non-transient HTTP failure is reported");
+  Check(permanent_attempts == 1, "non-transient HTTP failure is not retried");
   const auto has_current_source = [&](const std::string& source) {
     for (const auto& value : capabilities["currentSources"]) {
       if (value.asString() == source) return true;
@@ -826,6 +870,78 @@ int main() {
             environment_result.current_source == "existing-file" &&
             environment_result.selected_cycle == "20260701T0000Z",
         "combined environment orchestration and deterministic merge");
+
+  const auto hourly_resume_path = Temp("hourly-resume-environment.grb");
+  eg::EnvironmentRequest hourly_resume = environment;
+  hourly_resume.output = hourly_resume_path;
+  hourly_resume.hours = 1;
+  hourly_resume.step_hours = 1;
+  hourly_resume.current_source = "marine_ie_irish_sea";
+  hourly_resume.current_file.reset();
+  int first_weather_requests = 0;
+  bool first_failed = false;
+  try {
+    eg::GenerateEnvironment(
+        hourly_resume,
+        [&](const std::string& url, double) -> std::vector<unsigned char> {
+          if (url.rfind("ftp://", 0) == 0)
+            throw eg::HttpDownloadError("simulated current outage", false);
+          ++first_weather_requests;
+          return downloaded;
+        });
+  } catch (const eg::ValidationError&) {
+    first_failed = true;
+  }
+  Check(first_failed && first_weather_requests == 2,
+        "hourly environment failure occurs after completed weather stage");
+  int resumed_weather_requests = 0;
+  bool reused_weather = false;
+  const auto resumed_environment = eg::GenerateEnvironment(
+      hourly_resume,
+      [&](const std::string& url, double) {
+        if (url.rfind("ftp://", 0) == 0) return downloaded;
+        ++resumed_weather_requests;
+        return downloaded;
+      },
+      std::nullopt,
+      [&](const std::string& stage, const Json::Value&) {
+        if (stage == "reusing completed weather") reused_weather = true;
+      });
+  Check(resumed_weather_requests == 0 && reused_weather &&
+            resumed_environment.selected_cycle == "20260701T0000Z" &&
+            resumed_environment.message_count == 6,
+        "validated hourly weather checkpoint resumes without redownload");
+
+  const auto coupled_resume_path = Temp("coupled-gfs-resume.grb");
+  eg::EnvironmentRequest coupled_resume = hourly_resume;
+  coupled_resume.output = coupled_resume_path;
+  coupled_resume.hours = 0;
+  coupled_resume.include_waves = true;
+  coupled_resume.wave_provider = "gfs_wave";
+  coupled_resume.wave_step_hours = 1;
+  int first_coupled_requests = 0;
+  try {
+    eg::GenerateEnvironment(
+        coupled_resume,
+        [&](const std::string& url, double) -> std::vector<unsigned char> {
+          if (url.rfind("ftp://", 0) == 0)
+            throw eg::HttpDownloadError("simulated current outage", false);
+          ++first_coupled_requests;
+          return downloaded;
+        });
+  } catch (const eg::ValidationError&) {
+  }
+  int resumed_coupled_requests = 0;
+  const auto resumed_coupled = eg::GenerateEnvironment(
+      coupled_resume,
+      [&](const std::string& url, double) {
+        if (url.rfind("ftp://", 0) == 0) return downloaded;
+        ++resumed_coupled_requests;
+        return downloaded;
+      });
+  Check(first_coupled_requests == 2 && resumed_coupled_requests == 0 &&
+            resumed_coupled.message_count == 6,
+        "coupled GFS atmosphere/wave checkpoints resume as a matched cycle");
   const auto merged_path = Temp("merged.grb");
   const auto merged = eg::MergeGribStreams({{"a", current_path}, {"b", current_path}}, merged_path, true);
   Check(merged.output_message_count == 4, "atomic stream merge");
@@ -875,7 +991,7 @@ int main() {
             wave_only_result.wave_provider == "gfs_wave",
         "wave generation remains independent of weather selection");
 
-  for (const auto& path : {minimal, wrapped, clean, current_path, grib2_path, merged_path, netcdf_path, wave_netcdf, wave_grib, wave_only_path, weather_path, icon_path, hrrr_path, ecmwf_path, marine_path, rtofs_source, rtofs_output, copernicus_output, global_current_output, remote_wave_output, environment_path}) {
+  for (const auto& path : {minimal, wrapped, clean, current_path, grib2_path, merged_path, netcdf_path, wave_netcdf, wave_grib, wave_only_path, weather_path, icon_path, hrrr_path, ecmwf_path, marine_path, rtofs_source, rtofs_output, copernicus_output, global_current_output, remote_wave_output, environment_path, hourly_resume_path, coupled_resume_path}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
   }
