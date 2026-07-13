@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -70,9 +71,57 @@ class NcFile {
     while(!value.empty() && (value.back()=='\0' || value.back()==' ')) value.pop_back();
     return value;
   }
+  std::string AttributeText(const std::string& variable_name,
+                            const std::string& attribute_name) const {
+    const int variable = Var(variable_name);
+    std::size_t length = 0;
+    NcCheck(nc_inq_attlen(id_, variable, attribute_name.c_str(), &length),
+            "missing " + attribute_name + " attribute on " + variable_name);
+    std::string value(length, '\0');
+    NcCheck(nc_get_att_text(id_, variable, attribute_name.c_str(), value.data()),
+            "could not read " + attribute_name + " attribute on " +
+                variable_name);
+    return value;
+  }
  private:
   std::filesystem::path path_; int id_{-1};
 };
+
+std::string NormalizedUnit(std::string value) {
+  value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char c) {
+                return std::isspace(c) || c == '_' || c == '.';
+              }),
+              value.end());
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return value;
+}
+
+double DepthToCentimetres(const std::string& units) {
+  const auto unit = NormalizedUnit(units);
+  if (unit == "m" || unit == "meter" || unit == "meters" ||
+      unit == "metre" || unit == "metres") {
+    return 100.0;
+  }
+  if (unit == "cm" || unit == "centimeter" || unit == "centimeters" ||
+      unit == "centimetre" || unit == "centimetres") {
+    return 1.0;
+  }
+  throw ValidationError("unsupported TPXO bathymetry units: " + units);
+}
+
+double TransportToSquareCentimetresPerSecond(const std::string& units) {
+  const auto unit = NormalizedUnit(units);
+  if (unit == "centimeter^2/sec" || unit == "centimetre^2/sec" ||
+      unit == "cm^2/s" || unit == "cm2/s" || unit == "cm2s-1") {
+    return 1.0;
+  }
+  if (unit == "meter^2/sec" || unit == "metre^2/sec" ||
+      unit == "m^2/s" || unit == "m2/s" || unit == "m2s-1") {
+    return 10000.0;
+  }
+  throw ValidationError("unsupported TPXO transport units: " + units);
+}
 
 struct AxisWindow { std::size_t begin{},count{}; std::vector<double> values; };
 
@@ -131,6 +180,11 @@ RegionalField ReadComponent(const std::filesystem::path& grid_path,
   if(!xy&&!yx) throw ValidationError("TPXO bathymetry dimensions do not match coordinate axes");
   const auto model_shape=model.Shape(model.Var(suffix+"Re"));
   if(model_shape!=bath_shape) throw ValidationError("TPXO transport and bathymetry dimensions differ");
+  const double depth_to_cm =
+      DepthToCentimetres(grid.AttributeText("h" + suffix, "units"));
+  const double transport_to_cm2_s =
+      TransportToSquareCentimetresPerSecond(
+          model.AttributeText(suffix + "Re", "units"));
   std::vector<RegionalField> pieces;
   for(const auto& [xw,shift]:xwindows) {
     const std::vector<std::size_t> start=xy?std::vector<std::size_t>{xw.begin,yw.begin}:std::vector<std::size_t>{yw.begin,xw.begin};
@@ -144,7 +198,12 @@ RegionalField ReadComponent(const std::filesystem::path& grid_path,
       const std::size_t target=y*xw.count+x;
       if(!std::isfinite(depth[source]) || depth[source]==0 || !std::isfinite(real[source]) || !std::isfinite(imag[source]))
         piece.values[target]={NAN,NAN};
-      else piece.values[target]={real[source]/depth[source],imag[source]/depth[source]};
+      else {
+        const double depth_cm = depth[source] * depth_to_cm;
+        piece.values[target] = {
+            real[source] * transport_to_cm2_s / depth_cm,
+            imag[source] * transport_to_cm2_s / depth_cm};
+      }
     }
     pieces.push_back(std::move(piece));
   }
@@ -225,6 +284,7 @@ TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
   TpxoCache cache; cache.bbox=bbox; cache.grid=output_grid;
   cache.metadata["format"]="tidal-current-grib-generator-tpxo-cache";
   cache.metadata["format_version"]=1; cache.metadata["model_name"]="TPXO10-atlas-v2-nc";
+  cache.metadata["velocity_units"]="cm/s";
   cache.metadata["corrections"]="ATLAS"; cache.metadata["grid_spacing_deg"]=output_grid.spacing_deg;
   cache.metadata["bbox"]["west"]=bbox.west; cache.metadata["bbox"]["south"]=bbox.south;
   cache.metadata["bbox"]["east"]=bbox.east; cache.metadata["bbox"]["north"]=bbox.north;

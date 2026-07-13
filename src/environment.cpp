@@ -77,9 +77,18 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   if (current_source == "tpxo-cache") {
     if (!request.input_cache)
       throw ValidationError("tpxo-cache current source requires input-cache");
-    if (!std::filesystem::is_regular_file(*request.input_cache)) {
+    bool cache_needs_preparation =
+        !std::filesystem::is_regular_file(*request.input_cache);
+    if (!cache_needs_preparation) {
+      try {
+        LoadTpxoCache(*request.input_cache);
+      } catch (const ValidationError&) {
+        cache_needs_preparation = true;
+      }
+    }
+    if (cache_needs_preparation) {
       if (!request.auto_prepare_tpxo_cache)
-        throw ValidationError("TPXO cache file not found: " +
+        throw ValidationError("TPXO cache is missing or incompatible: " +
                               request.input_cache->string());
       if (!request.tpxo_model_directory)
         throw ValidationError(
@@ -285,8 +294,16 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   } else if (current_source == "tpxo-cache") {
     if (!request.input_cache)
       throw ValidationError("tpxo-cache current source requires input-cache");
-    if (!std::filesystem::is_regular_file(*request.input_cache) &&
-        request.auto_prepare_tpxo_cache) {
+    bool cache_needs_preparation =
+        !std::filesystem::is_regular_file(*request.input_cache);
+    if (!cache_needs_preparation) {
+      try {
+        LoadTpxoCache(*request.input_cache);
+      } catch (const ValidationError&) {
+        cache_needs_preparation = true;
+      }
+    }
+    if (cache_needs_preparation && request.auto_prepare_tpxo_cache) {
       if (!request.tpxo_model_directory) {
         throw ValidationError(
             "automatic TPXO cache preparation requires tpxoModelDirectory");

@@ -89,6 +89,79 @@ void WriteNetCDFFixture(const std::filesystem::path& path, const std::string& un
   Nc(nc_close(file), "close fixture");
 }
 
+void WriteTpxoModelFixture(const std::filesystem::path& root) {
+  std::filesystem::create_directories(root);
+  const double axis[] = {-1.0, -0.5, 0.0};
+  const double depth[] = {100.0, 100.0, 100.0, 100.0, 100.0,
+                          100.0, 100.0, 100.0, 100.0};
+  int file = -1, x = -1, y = -1;
+  Nc(nc_create((root / "grid_tpxo10atlas_v2.nc").c_str(), NC_CLOBBER,
+               &file),
+     "create TPXO grid fixture");
+  Nc(nc_def_dim(file, "nx", 3, &x), "TPXO grid x dimension");
+  Nc(nc_def_dim(file, "ny", 3, &y), "TPXO grid y dimension");
+  int lon_u = -1, lat_u = -1, lon_v = -1, lat_v = -1, hu = -1, hv = -1;
+  Nc(nc_def_var(file, "lon_u", NC_DOUBLE, 1, &x, &lon_u), "TPXO lon u");
+  Nc(nc_def_var(file, "lat_u", NC_DOUBLE, 1, &y, &lat_u), "TPXO lat u");
+  Nc(nc_def_var(file, "lon_v", NC_DOUBLE, 1, &x, &lon_v), "TPXO lon v");
+  Nc(nc_def_var(file, "lat_v", NC_DOUBLE, 1, &y, &lat_v), "TPXO lat v");
+  const int grid_dims[] = {x, y};
+  Nc(nc_def_var(file, "hu", NC_DOUBLE, 2, grid_dims, &hu), "TPXO hu");
+  Nc(nc_def_var(file, "hv", NC_DOUBLE, 2, grid_dims, &hv), "TPXO hv");
+  const std::string metres = "meter";
+  Nc(nc_put_att_text(file, hu, "units", metres.size(), metres.c_str()),
+     "TPXO hu units");
+  Nc(nc_put_att_text(file, hv, "units", metres.size(), metres.c_str()),
+     "TPXO hv units");
+  Nc(nc_enddef(file), "finish TPXO grid definitions");
+  Nc(nc_put_var_double(file, lon_u, axis), "TPXO lon u values");
+  Nc(nc_put_var_double(file, lat_u, axis), "TPXO lat u values");
+  Nc(nc_put_var_double(file, lon_v, axis), "TPXO lon v values");
+  Nc(nc_put_var_double(file, lat_v, axis), "TPXO lat v values");
+  Nc(nc_put_var_double(file, hu, depth), "TPXO hu values");
+  Nc(nc_put_var_double(file, hv, depth), "TPXO hv values");
+  Nc(nc_close(file), "close TPXO grid fixture");
+
+  Nc(nc_create((root / "u_m2_tpxo10_atlas_30_v2.nc").c_str(), NC_CLOBBER,
+               &file),
+     "create TPXO transport fixture");
+  int chars = -1;
+  Nc(nc_def_dim(file, "nx", 3, &x), "TPXO transport x dimension");
+  Nc(nc_def_dim(file, "ny", 3, &y), "TPXO transport y dimension");
+  Nc(nc_def_dim(file, "nct", 4, &chars), "TPXO constituent dimension");
+  int con = -1, u_real = -1, u_imag = -1, v_real = -1, v_imag = -1;
+  Nc(nc_def_var(file, "con", NC_CHAR, 1, &chars, &con), "TPXO constituent");
+  Nc(nc_def_var(file, "lon_u", NC_DOUBLE, 1, &x, &lon_u), "TPXO model lon u");
+  Nc(nc_def_var(file, "lat_u", NC_DOUBLE, 1, &y, &lat_u), "TPXO model lat u");
+  Nc(nc_def_var(file, "lon_v", NC_DOUBLE, 1, &x, &lon_v), "TPXO model lon v");
+  Nc(nc_def_var(file, "lat_v", NC_DOUBLE, 1, &y, &lat_v), "TPXO model lat v");
+  Nc(nc_def_var(file, "uRe", NC_DOUBLE, 2, grid_dims, &u_real), "TPXO u real");
+  Nc(nc_def_var(file, "uIm", NC_DOUBLE, 2, grid_dims, &u_imag), "TPXO u imag");
+  Nc(nc_def_var(file, "vRe", NC_DOUBLE, 2, grid_dims, &v_real), "TPXO v real");
+  Nc(nc_def_var(file, "vIm", NC_DOUBLE, 2, grid_dims, &v_imag), "TPXO v imag");
+  const std::string transport_units = "centimeter^2/sec";
+  for (const int variable : {u_real, u_imag, v_real, v_imag}) {
+    Nc(nc_put_att_text(file, variable, "units", transport_units.size(),
+                       transport_units.c_str()),
+       "TPXO transport units");
+  }
+  Nc(nc_enddef(file), "finish TPXO transport definitions");
+  const char constituent[] = {'m', '2', ' ', ' '};
+  const std::vector<double> u_values(9, 100000.0);
+  const std::vector<double> v_values(9, 50000.0);
+  const std::vector<double> zero_values(9, 0.0);
+  Nc(nc_put_var_text(file, con, constituent), "TPXO constituent value");
+  Nc(nc_put_var_double(file, lon_u, axis), "TPXO model lon u values");
+  Nc(nc_put_var_double(file, lat_u, axis), "TPXO model lat u values");
+  Nc(nc_put_var_double(file, lon_v, axis), "TPXO model lon v values");
+  Nc(nc_put_var_double(file, lat_v, axis), "TPXO model lat v values");
+  Nc(nc_put_var_double(file, u_real, u_values.data()), "TPXO u real values");
+  Nc(nc_put_var_double(file, u_imag, zero_values.data()), "TPXO u imag values");
+  Nc(nc_put_var_double(file, v_real, v_values.data()), "TPXO v real values");
+  Nc(nc_put_var_double(file, v_imag, zero_values.data()), "TPXO v imag values");
+  Nc(nc_close(file), "close TPXO transport fixture");
+}
+
 void WriteWaveFixture(const std::filesystem::path& path) {
   int file = -1;
   Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create wave fixture");
@@ -309,6 +382,28 @@ int main() {
   Check(preflight_http_calls == 0,
         "invalid TPXO model rejected before weather downloads");
   std::filesystem::remove_all(tpxo_root);
+
+  const auto tpxo_units_root = Temp("tpxo-units");
+  const auto tpxo_units_atlas = tpxo_units_root / "TPXO10_atlas_v2";
+  WriteTpxoModelFixture(tpxo_units_atlas);
+  const auto tpxo_units_grid =
+      eg::BuildRegularGrid({-1.0, -1.0, 0.0, 0.0}, 0.5);
+  auto tpxo_units_cache = eg::LoadTpxo10AtlasModel(
+      tpxo_units_root, {-1.0, -1.0, 0.0, 0.0}, tpxo_units_grid);
+  Check(Near(tpxo_units_cache.u_cm_s.front().real(), 10.0) &&
+            Near(tpxo_units_cache.u_cm_s.front().imag(), 0.0) &&
+            Near(tpxo_units_cache.v_cm_s.front().real(), 5.0) &&
+            Near(tpxo_units_cache.v_cm_s.front().imag(), 0.0) &&
+            tpxo_units_cache.metadata["velocity_units"].asString() == "cm/s",
+        "TPXO metre bathymetry and cm2/s transport convert to cm/s");
+  tpxo_units_cache.metadata.removeMember("velocity_units");
+  tpxo_units_cache.metadata["pyTMD_version"] = Json::nullValue;
+  const auto ambiguous_cache = Temp("ambiguous-native.tpxocache");
+  eg::WriteTpxoCache(ambiguous_cache, tpxo_units_cache, true);
+  ExpectValidation([&] { eg::LoadTpxoCache(ambiguous_cache); },
+                   "ambiguous legacy native TPXO cache rejected");
+  std::filesystem::remove_all(tpxo_units_root);
+  std::filesystem::remove(ambiguous_cache);
 
   const eg::BoundingBox bbox{-1.0, 50.0, 0.0, 51.0};
   bbox.Validate();

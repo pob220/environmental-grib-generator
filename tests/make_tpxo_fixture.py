@@ -23,9 +23,9 @@ def main() -> int:
             "lon_u": (("nx",), x), "lat_u": (("ny",), y),
             "lon_v": (("nx",), x), "lat_v": (("ny",), y),
             "lon_z": (("nx",), x), "lat_z": (("ny",), y),
-            "hu": (("nx", "ny"), depth, {"units": "cm"}),
-            "hv": (("nx", "ny"), depth, {"units": "cm"}),
-            "hz": (("nx", "ny"), depth, {"units": "cm"}),
+            "hu": (("nx", "ny"), depth, {"units": "meter"}),
+            "hv": (("nx", "ny"), depth, {"units": "meter"}),
+            "hz": (("nx", "ny"), depth, {"units": "meter"}),
         }
     ).to_netcdf(root / "grid_tpxo10atlas_v2.nc")
 
@@ -41,10 +41,10 @@ def main() -> int:
                 "con": (("nchar",), con),
                 "lon_u": (("nx",), x), "lat_u": (("ny",), y),
                 "lon_v": (("nx",), x), "lat_v": (("ny",), y),
-                "uRe": (("nx", "ny"), depth * base, {"units": "cm^2/s"}),
-                "uIm": (("nx", "ny"), depth * base * 0.1, {"units": "cm^2/s"}),
-                "vRe": (("nx", "ny"), depth * base * 0.5, {"units": "cm^2/s"}),
-                "vIm": (("nx", "ny"), depth * base * 0.05, {"units": "cm^2/s"}),
+                "uRe": (("nx", "ny"), depth * 100.0 * base, {"units": "cm^2/s"}),
+                "uIm": (("nx", "ny"), depth * 100.0 * base * 0.1, {"units": "cm^2/s"}),
+                "vRe": (("nx", "ny"), depth * 100.0 * base * 0.5, {"units": "cm^2/s"}),
+                "vIm": (("nx", "ny"), depth * 100.0 * base * 0.05, {"units": "cm^2/s"}),
             }
         ).to_netcdf(root / name)
     for index, relative in enumerate(model["z"]["model_file"]):

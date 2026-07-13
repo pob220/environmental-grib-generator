@@ -502,8 +502,19 @@ TpxoCache LoadTpxoCache(const std::filesystem::path& path) {
     Json::CharReaderBuilder builder; Json::Value metadata; std::string errors;
     std::istringstream input(metadata_values[0]);
     if (!Json::parseFromStream(builder,input,&metadata,&errors)) throw ValidationError("invalid TPXO cache metadata JSON");
-    if (metadata["format"].asString()!="tidal-current-grib-generator-tpxo-cache" || metadata["format_version"].asInt()!=1)
+    const int format_version = metadata["format_version"].asInt();
+    if (metadata["format"].asString()!="tidal-current-grib-generator-tpxo-cache" ||
+        format_version != 1)
       throw ValidationError("unsupported TPXO cache format");
+    if (format_version == 1 && metadata["pyTMD_version"].isNull() &&
+        !metadata.isMember("velocity_units")) {
+      throw ValidationError(
+          "legacy native TPXO cache has ambiguous current units and must be rebuilt");
+    }
+    if (metadata.isMember("velocity_units") &&
+        metadata["velocity_units"].asString() != "cm/s") {
+      throw ValidationError("unsupported TPXO cache velocity units");
+    }
     const auto longitudes=ReadF64(ReadNpy(archive,"longitudes"),"longitudes");
     const auto latitudes=ReadF64(ReadNpy(archive,"latitudes"),"latitudes");
     const auto constituents=ReadUnicode(ReadNpy(archive,"constituents"),"constituents");
