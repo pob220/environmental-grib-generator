@@ -14,14 +14,16 @@ required where both implementations use the same packing.
 | GRIB1 current and GRIB2 weather/wave writing | Implemented | ecCodes field/value comparison |
 | Synthetic, constant and local NetCDF currents | Implemented | Byte/value differential tests |
 | Marine.ie current GRIB | Implemented | Wrapped-stream and component fixtures |
-| Copernicus NWS currents | Implemented | Mock STAC/Blosc fixture and bounded public-ARCO smoke test; authenticated live value comparison requires a user account |
-| Copernicus Global currents | Implemented | Multidimensional float Zarr fixture; authenticated live comparison requires a user account |
+| Copernicus NWS currents | Implemented | Mock STAC/Blosc fixture, bounded retries and attempted-host diagnostics. The NWS catalogue currently depends on CloudFerro waw3; no silent global-model substitution is made when that regional catalogue is unavailable. |
+| Copernicus Global currents | Implemented | Multidimensional float Zarr fixture plus authenticated live 2 x 2 field generation through the official waw4 fallback; ecCodes validated two GRIB1 current messages. |
+| Copernicus IBI currents | Implemented | Explicit 1/36-degree hourly regional source including tides and non-tidal model processes. Its official metadata and ARCO payloads are mirrored on waw4. Coverage ends at 56.08 N, so it is not silently substituted for NWS. |
+| Copernicus Mediterranean currents | Implemented | Explicit 4.2 km hourly regional source including tidal and non-tidal model processes, available from the official waw4 mirror. |
 | NOAA RTOFS regional/global files | Implemented | Inventory and curvilinear NetCDF/Qhull fixtures |
 | GFS and GFS Wave | Implemented | URL/cycle/atomic assembly fixtures and bounded live byte-identical GFS run |
 | HRRR | Implemented | Inventory/range/cadence fixtures |
 | ICON-EU | Implemented | URL/cadence/bzip2 fixtures |
 | ECMWF IFS/AIFS | Implemented | URL/index/range/field fixtures; AIFS remains experimental upstream |
-| Copernicus Global Waves | Implemented | Local NetCDF and remote packed-Zarr fixtures |
+| Copernicus Global Waves | Implemented | Local NetCDF and remote packed-Zarr fixtures plus authenticated live 2 x 2 generation through the official waw4 fallback; ecCodes validated three GRIB2 wave messages. |
 | UKMO UKV | Implemented when PROJ is available | Projected fixtures and bounded live differential run (maximum field difference 0.0028 in source units) |
 | TPXO cache prediction | Implemented | 15-constituent major/minor pyTMD differential test |
 | TPXO10 Atlas v2 direct model | Implemented | Complete synthetic ATLAS directory differential test |
@@ -37,6 +39,10 @@ generation source.
 
 - Copernicus credentials are validated and never accepted merely because an
   anonymous object request happens to work.
+- Copernicus metadata roots are read from the official client configuration
+  and supplemented with documented CloudFerro hosts. Retry counts and delays
+  are bounded. A selected provider is never silently replaced by another
+  product when one cloud host is unavailable.
 - UKV is unavailable when native PROJ is absent; it is never approximated.
 - TPXO source data remains user-supplied and licensed. Prepared caches retain
   the redistribution warning.

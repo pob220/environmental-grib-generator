@@ -148,9 +148,10 @@ Json::Value GeneratorCapabilitiesJson() {
   value["waveProviders"] =
       StringArray({"gfs_wave", "copernicus_global_waves"});
   value["currentSources"] = StringArray(
-      {"none", "auto", "existing-file", "offline-tidal", "tpxo", "tpxo-cache",
-       "netcdf", "synthetic", "marine_ie_irish_sea", "noaa_rtofs_global",
-       "copernicus_nws", "copernicus_global"});
+      {"none", "auto", "existing-file", "offline-tidal", "tpxo",
+       "tpxo-cache", "netcdf", "synthetic", "marine_ie_irish_sea",
+       "noaa_rtofs_global", "copernicus_nws", "copernicus_global",
+       "copernicus_ibi", "copernicus_mediterranean"});
   value["progressProtocol"] = "json-lines-v1";
   return value;
 }

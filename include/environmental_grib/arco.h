@@ -16,6 +16,7 @@ struct ArcoDataset {
   std::string dataset_id;
   std::string version_id;
   std::string service_url;
+  std::string metadata_root;
   Json::Value item;
 };
 

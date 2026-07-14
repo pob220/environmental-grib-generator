@@ -9,6 +9,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 
@@ -17,8 +18,12 @@
 
 namespace environmental_grib {
 namespace {
-constexpr const char* kRoot =
+constexpr const char* kClientConfig =
+    "https://stac.marine.copernicus.eu/clients-config-v1";
+constexpr const char* kWaw3Root =
     "https://s3.waw3-1.cloudferro.com/mdl-metadata/metadata";
+constexpr const char* kWaw4Root =
+    "https://s3.waw4-1.cloudferro.com/mdl-metadata/metadata";
 
 Json::Value Parse(const std::vector<unsigned char>& bytes,
                   const std::string& context) {
@@ -31,9 +36,50 @@ Json::Value Parse(const std::vector<unsigned char>& bytes,
   return value;
 }
 
+std::string TrimSlash(std::string value) {
+  while (!value.empty() && value.back() == '/') value.pop_back();
+  return value;
+}
+
+void AddRoot(std::vector<std::string>& roots, std::set<std::string>& seen,
+             std::string root) {
+  root = TrimSlash(std::move(root));
+  if (root.starts_with("https://") && seen.insert(root).second)
+    roots.push_back(std::move(root));
+}
+
+std::vector<std::string> MetadataRoots(BinaryDownload& download,
+                                       double timeout) {
+  std::vector<std::string> roots;
+  std::set<std::string> seen;
+  try {
+    const auto config = Parse(
+        download(kClientConfig, std::min(timeout, 10.0)),
+        "Copernicus client configuration");
+    if (config["catalogues"].isArray()) {
+      for (const auto& catalogue : config["catalogues"])
+        AddRoot(roots, seen, catalogue["stacRoot"].asString());
+    }
+  } catch (const std::exception&) {
+    // Static official roots retain compatibility when the CDN config is down.
+  }
+  AddRoot(roots, seen, kWaw3Root);
+  AddRoot(roots, seen, kWaw4Root);
+  return roots;
+}
+
+std::string DatasetUrl(const std::string& root, const std::string& product,
+                       const std::string& href) {
+  const std::string marker = "/" + product + "/";
+  if (const auto at = href.find(marker); at != std::string::npos)
+    return root + marker + href.substr(at + marker.size());
+  if (href.starts_with("https://")) return href;
+  return root + marker + href;
+}
+
 std::string Suffix(const std::string& username) {
   std::string result =
-      "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.1";
+      "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.2";
   if (!username.empty()) {
     result += "&x-cop-user=";
     for (unsigned char c : username) {
@@ -54,7 +100,8 @@ Axis AxisFor(const Json::Value& asset, const std::string& variable,
   const auto& dim = asset["viewDims"][name];
   const auto& coords = dim["coords"];
   Axis axis;
-  axis.size = coords["len"].asUInt64();
+  axis.size = coords.isMember("len") ? coords["len"].asUInt64()
+                                      : dim["len"].asUInt64();
   axis.chunk = dim["chunkLen"][variable].asUInt64();
   if (coords["type"].asString() == "explicit") {
     axis.minimum = coords["values"][0].asDouble();
@@ -207,18 +254,43 @@ ArcoDataset DiscoverArcoDataset(const std::string& product,
                                 const std::string& username,
                                 BinaryDownload download, double timeout) {
   if (!download) download = CurlHttpGet;
-  const auto product_json = Parse(download(std::string(kRoot) + "/" + product + "/product.stac.json" + Suffix(username), timeout), "STAC product");
-  std::vector<std::string> matches;
-  for (const auto& link : product_json["links"]) {
-    const auto href = link["href"].asString();
-    if (link["rel"].asString() == "item" && href.find(dataset) != std::string::npos) matches.push_back(href);
+  std::vector<std::string> failures;
+  const double attempt_timeout = std::min(timeout, 20.0);
+  for (const auto& root : MetadataRoots(download, timeout)) {
+    try {
+      const auto product_json = Parse(
+          download(root + "/" + product + "/product.stac.json" +
+                       Suffix(username),
+                   attempt_timeout),
+          "STAC product");
+      std::vector<std::string> matches;
+      for (const auto& link : product_json["links"]) {
+        const auto href = link["href"].asString();
+        if (link["rel"].asString() == "item" &&
+            href.find(dataset) != std::string::npos)
+          matches.push_back(href);
+      }
+      if (matches.empty())
+        throw ValidationError("dataset is not listed");
+      std::sort(matches.begin(), matches.end());
+      const auto item = Parse(
+          download(DatasetUrl(root, product, matches.back()) +
+                       Suffix(username),
+                   attempt_timeout),
+          "STAC dataset");
+      const auto service =
+          item["assets"]["timeChunked"]["href"].asString();
+      if (service.empty())
+        throw ValidationError("dataset has no timeChunked service");
+      return {dataset, item["id"].asString(), service, root, item};
+    } catch (const std::exception& error) {
+      failures.push_back(root + ": " + error.what());
+    }
   }
-  if (matches.empty()) throw ValidationError("Copernicus STAC dataset was not found: " + dataset);
-  std::sort(matches.begin(), matches.end());
-  const auto item = Parse(download(std::string(kRoot) + "/" + product + "/" + matches.back() + Suffix(username), timeout), "STAC dataset");
-  const auto service = item["assets"]["timeChunked"]["href"].asString();
-  if (service.empty()) throw ValidationError("Copernicus STAC dataset has no timeChunked service");
-  return {dataset, item["id"].asString(), service, item};
+  std::ostringstream message;
+  message << "Copernicus metadata discovery failed for " << dataset;
+  for (const auto& failure : failures) message << "\n  " << failure;
+  throw ValidationError(message.str());
 }
 
 std::map<std::string, std::vector<NetCDFScalarField>> ReadArcoFields(

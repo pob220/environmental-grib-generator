@@ -575,7 +575,7 @@ public:
     std::vector<std::vector<double>> sampled(
         fields_,
         std::vector<double>(points, std::numeric_limits<double>::quiet_NaN()));
-    std::vector<std::uint8_t> mask(points, 0);
+    std::vector<std::uint8_t> valid_mask(points, 0);
     for (std::size_t y = 0; y < output.ny(); ++y)
       for (std::size_t x = 0; x < output.nx(); ++x) {
         const auto p = y * output.nx() + x;
@@ -603,7 +603,7 @@ public:
             valid = false;
         }
         if (!valid) continue;
-        mask[p] = 1;
+        valid_mask[p] = 1;
         for (std::uint32_t f = 0; f < fields_; ++f) {
           double v = 0;
           for (int k = 0; k < 4; ++k) {
@@ -621,12 +621,13 @@ public:
       CurrentGrid g;
       g.time = time;
       g.grid = output;
-      g.mask = mask;
+      g.mask.assign(points, 1);
       g.u_mps.resize(points, std::numeric_limits<double>::quiet_NaN());
       g.v_mps.resize(points, std::numeric_limits<double>::quiet_NaN());
       const double phi = YearPhase(time);
       for (std::size_t p = 0; p < points; ++p)
-        if (mask[p]) {
+        if (valid_mask[p]) {
+          g.mask[p] = 0;
           if (fields_ == 10) {
             g.u_mps[p] = sampled[0][p] + sampled[1][p] * std::cos(phi) +
                          sampled[2][p] * std::sin(phi) +
@@ -1041,15 +1042,15 @@ public:
       throw ValidationError("XTD residual timestamp count mismatch");
     for (std::size_t t = 0; t < result.size(); ++t)
       for (std::size_t p = 0; p < grid.size(); ++p) {
-        const bool valid = (!result[t].has_mask() || result[t].mask[p]) &&
-                           (!clim[t].has_mask() || clim[t].mask[p]) &&
+        const bool valid = (!result[t].has_mask() || !result[t].mask[p]) &&
+                           (!clim[t].has_mask() || !clim[t].mask[p]) &&
                            std::isfinite(result[t].u_mps[p]) &&
                            std::isfinite(result[t].v_mps[p]) &&
                            std::isfinite(clim[t].u_mps[p]) &&
                            std::isfinite(clim[t].v_mps[p]);
         if (!valid) {
-          if (result[t].mask.empty()) result[t].mask.assign(grid.size(), 1);
-          result[t].mask[p] = 0;
+          if (result[t].mask.empty()) result[t].mask.assign(grid.size(), 0);
+          result[t].mask[p] = 1;
           result[t].u_mps[p] = result[t].v_mps[p] =
               std::numeric_limits<double>::quiet_NaN();
         } else {

@@ -12,6 +12,7 @@
 #include <blosc.h>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/arco.h"
 #include "environmental_grib/environment.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/geo.h"
@@ -458,7 +459,8 @@ int main() {
   for (const auto* source :
        {"none", "auto", "existing-file", "tpxo", "tpxo-cache", "netcdf",
         "synthetic", "marine_ie_irish_sea", "noaa_rtofs_global",
-        "copernicus_nws", "copernicus_global"}) {
+        "copernicus_nws", "copernicus_global", "copernicus_ibi",
+        "copernicus_mediterranean"}) {
     Check(has_current_source(source),
           std::string("existing current source remains available: ") + source);
   }
@@ -624,6 +626,14 @@ int main() {
   Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 96, registry)
                 ->id == "copernicus_nws",
         "NWS selected beyond Marine.ie duration");
+  Check(registry.Get("copernicus_ibi")
+                .SupportsBbox({-8.5, 50.5, -2.5, 56.0}) &&
+            !registry.Get("copernicus_ibi")
+                 .SupportsBbox({-8.5, 50.5, -2.5, 56.5}),
+        "IBI provider enforces its published northern coverage boundary");
+  Check(registry.Get("copernicus_mediterranean")
+            .SupportsBbox({0.0, 35.0, 10.0, 42.0}),
+        "Mediterranean provider advertises its regional coverage");
   Check(!registry.Get("noaa_rtofs_global")
                 .SupportsBbox({-6.5, 52.0, -4.5, 55.0}) &&
             registry.Get("noaa_rtofs_global")
@@ -661,6 +671,15 @@ int main() {
   Check(inspection["current_component_counts"]["u_49"].asUInt64() == 1 &&
             inspection["current_component_counts"]["v_50"].asUInt64() == 1,
         "ecCodes current parameters");
+  auto masked_current = constant;
+  masked_current.mask.assign(grid.size(), 0);
+  masked_current.mask.front() = 1;
+  masked_current.u_mps.front() = std::numeric_limits<double>::quiet_NaN();
+  masked_current.v_mps.front() = std::numeric_limits<double>::quiet_NaN();
+  const auto masked_current_path = Temp("masked-current.grb");
+  eg::WriteGrib1Currents({masked_current}, masked_current_path);
+  Check(eg::InspectGrib(masked_current_path)["message_count"].asUInt64() == 2,
+        "ecCodes current writer encodes masked non-finite cells");
   const auto grib2_path = Temp("fields.grb2");
   std::vector<eg::Grib2Field> grib2_fields;
   for (const auto& name :
@@ -848,6 +867,54 @@ int main() {
           R"({"id":"cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i_202607","assets":{"timeChunked":{"href":"https://test.invalid/nws.zarr","viewDims":{"latitude":{"coords":{"min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"coords":{"min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"coords":{"min":)") +
       std::to_string(epoch_ms) + R"(,"max":)" + std::to_string(epoch_ms) +
       R"(,"step":3600000,"len":1}}}}},"properties":{"cube:variables":{"uo":{"scale":0.001,"offset":0.0,"missingValue":-32768},"vo":{"scale":0.001,"offset":0.0,"missingValue":-32768}}}})";
+  const std::string client_config =
+      R"({"catalogues":[{"stacRoot":"https://s3.waw3-1.cloudferro.com/mdl-metadata/metadata/"}]})";
+  int primary_attempts = 0, mirror_attempts = 0;
+  const auto fallback_dataset = eg::DiscoverArcoDataset(
+      "NWSHELF_ANALYSISFORECAST_PHY_004_013",
+      "cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i", "test-user",
+      [&](const std::string& url, double timeout) {
+        Check(timeout <= 20.0, "Copernicus metadata attempt timeout is bounded");
+        if (url.find("stac.marine.copernicus.eu/clients-config-v1") !=
+            std::string::npos)
+          return std::vector<unsigned char>(client_config.begin(),
+                                            client_config.end());
+        if (url.find("s3.waw3-1.cloudferro.com") != std::string::npos) {
+          ++primary_attempts;
+          throw std::runtime_error("primary metadata unavailable");
+        }
+        if (url.find("s3.waw4-1.cloudferro.com") != std::string::npos) {
+          ++mirror_attempts;
+          if (url.find("product.stac.json") != std::string::npos)
+            return std::vector<unsigned char>(copernicus_product.begin(),
+                                              copernicus_product.end());
+          if (url.find("dataset.stac.json") != std::string::npos)
+            return std::vector<unsigned char>(copernicus_item.begin(),
+                                              copernicus_item.end());
+        }
+        throw std::runtime_error("unexpected fallback URL: " + url);
+      });
+  Check(primary_attempts == 1 && mirror_attempts == 2 &&
+            fallback_dataset.metadata_root.find("waw4-1") !=
+                std::string::npos,
+        "Copernicus metadata discovery falls back to official mirror");
+  bool roots_reported = false;
+  try {
+    eg::DiscoverArcoDataset(
+        "NWSHELF_ANALYSISFORECAST_PHY_004_013",
+        "cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i", "test-user",
+        [](const std::string& url, double) -> std::vector<unsigned char> {
+          if (url.find("clients-config-v1") != std::string::npos)
+            return {'{'};
+          throw std::runtime_error("unreachable");
+        });
+  } catch (const eg::ValidationError& error) {
+    const std::string message = error.what();
+    roots_reported = message.find("waw3-1") != std::string::npos &&
+                     message.find("waw4-1") != std::string::npos;
+  }
+  Check(roots_reported,
+        "Copernicus metadata failure reports every attempted official root");
   const auto u_chunk =
       BloscInt16({100, 200, 300, 200, 300, 400, 300, 400, 500});
   const auto v_chunk =
@@ -882,7 +949,7 @@ int main() {
       R"({"links":[{"rel":"item","href":"cmems_mod_glo_phy_anfc_0.083deg_PT1H-m_202607/dataset.stac.json"}]})";
   const std::string global_item =
       std::string(
-          R"({"id":"cmems_mod_glo_phy_anfc_0.083deg_PT1H-m_202607","assets":{"timeChunked":{"href":"https://test.invalid/global.zarr","viewDims":{"elevation":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"explicit","values":[-0.5],"len":1}},"latitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"minMaxStep","min":)") +
+          R"({"id":"cmems_mod_glo_phy_anfc_0.083deg_PT1H-m_202607","assets":{"timeChunked":{"href":"https://test.invalid/global.zarr","viewDims":{"elevation":{"chunkLen":{"uo":1,"vo":1},"len":1,"coords":{"type":"explicit","values":[-0.5]}},"latitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"chunkLen":{"uo":3,"vo":3},"coords":{"type":"minMaxStep","min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"chunkLen":{"uo":1,"vo":1},"coords":{"type":"minMaxStep","min":)") +
       std::to_string(epoch_ms) + R"(,"max":)" + std::to_string(epoch_ms) +
       R"(,"step":3600000,"len":1}}},"viewVariables":{"uo":{"dtype":"<f4"},"vo":{"dtype":"<f4"}}}},"properties":{"cube:variables":{"uo":{"dimensions":["time","elevation","latitude","longitude"],"scale":null,"offset":null,"missingValue":9.96921e36},"vo":{"dimensions":["time","elevation","latitude","longitude"],"scale":null,"offset":null,"missingValue":9.96921e36}}}})";
   const auto global_u =
@@ -908,6 +975,32 @@ int main() {
                 global_current_output)["current_component_counts"]["u_49"]
                     .asUInt64() == 1,
         "Copernicus Global float32 four-dimensional ARCO conversion");
+  const auto ibi_current_output = Temp("copernicus-ibi.grb");
+  eg::CopernicusRequest ibi_request = global_request;
+  ibi_request.provider = "copernicus_ibi";
+  ibi_request.output = ibi_current_output;
+  const std::string ibi_product =
+      R"({"links":[{"rel":"item","href":"cmems_mod_ibi_phy_anfc_0.027deg-2D_PT1H-m_202411/dataset.stac.json"}]})";
+  const auto ibi_current = eg::GenerateCopernicusIbi(
+      ibi_request,
+      [&](const std::string& url, double) {
+        if (url.find("product.stac.json") != std::string::npos)
+          return std::vector<unsigned char>(ibi_product.begin(),
+                                            ibi_product.end());
+        if (url.find("dataset.stac.json") != std::string::npos)
+          return std::vector<unsigned char>(global_item.begin(),
+                                            global_item.end());
+        if (url.find("/uo/0.0.0.0") != std::string::npos) return global_u;
+        if (url.find("/vo/0.0.0.0") != std::string::npos) return global_v;
+        throw std::runtime_error("unexpected mocked IBI URL: " + url);
+      },
+      [](const std::string&, const std::string&, double) { return true; });
+  Check(ibi_current.message_count == 2 &&
+            ibi_current.summary["provider"].asString() == "copernicus_ibi" &&
+            eg::InspectGrib(
+                ibi_current_output)["current_component_counts"]["v_50"]
+                    .asUInt64() == 1,
+        "Copernicus IBI uses the shared ARCO current-to-GRIB path");
   const auto remote_wave_output = Temp("copernicus-remote-waves.grb2");
   const std::string wave_product =
       R"({"links":[{"rel":"item","href":"cmems_mod_glo_wav_anfc_0.083deg_PT3H-i_202607/dataset.stac.json"}]})";

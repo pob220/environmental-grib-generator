@@ -300,10 +300,17 @@ GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
       SetLong(handle.get(), "jPointsAreConsecutive", 0);
       SetLong(handle.get(), "bitsPerValue", 16);
       std::vector<double> values = *source_values;
-      if (current.has_mask()) {
+      bool missing = false;
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        if ((current.has_mask() && current.mask[i]) ||
+            !std::isfinite(values[i])) {
+          values[i] = 9999.0;
+          missing = true;
+        }
+      }
+      if (missing) {
         SetLong(handle.get(), "bitmapPresent", 1);
         SetDouble(handle.get(), "missingValue", 9999.0);
-        for (std::size_t i = 0; i < values.size(); ++i) if (current.mask[i]) values[i] = 9999.0;
       }
       std::size_t size = values.size();
       Check(codes_set_double_array(handle.get(), "values", values.data(), size), "setting values");

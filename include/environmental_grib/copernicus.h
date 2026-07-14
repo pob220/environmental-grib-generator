@@ -49,6 +49,12 @@ CopernicusResult GenerateCopernicusNws(const CopernicusRequest& request,
 CopernicusResult GenerateCopernicusGlobal(
     const CopernicusRequest& request, BinaryDownload download = {},
     CredentialValidator validate_credentials = {});
+CopernicusResult GenerateCopernicusIbi(
+    const CopernicusRequest& request, BinaryDownload download = {},
+    CredentialValidator validate_credentials = {});
+CopernicusResult GenerateCopernicusMediterranean(
+    const CopernicusRequest& request, BinaryDownload download = {},
+    CredentialValidator validate_credentials = {});
 Json::Value CopernicusResultJson(const CopernicusResult& result);
 
 }  // namespace environmental_grib

@@ -99,7 +99,9 @@ WaveConvertResult GenerateCopernicusGlobalWaves(
   if (hours < 0 || hours > 240) throw ValidationError("Copernicus Global Waves hours must be between 0 and 240");
   if (username.empty() || password.empty()) throw ValidationError("Copernicus username and password are required");
   if (std::filesystem::exists(output) && !overwrite) throw ValidationError("output already exists; enable overwrite");
-  if (!download) download = CurlHttpGet;
+  if (!download)
+    download = BinaryDownload(MakeRetryingHttpGet(
+        {}, "Copernicus Global Waves", {}, {5, 1000, 8000}));
   if (!validate_credentials) validate_credentials = ValidateCopernicusCredentials;
   if (!validate_credentials(username, password, timeout_seconds))
     throw ValidationError("invalid Copernicus username or password");
@@ -133,6 +135,7 @@ WaveConvertResult GenerateCopernicusGlobalWaves(
   auto inspection = InspectGrib(output);
   inspection["wave_coverage"] = coverage;
   inspection["copernicus_dataset_version"] = dataset.version_id;
+  inspection["copernicus_metadata_root"] = dataset.metadata_root;
   const auto scan = ScanGribMessages(output);
   if (scan.message_count != times.size() * 3) throw ValidationError("Copernicus wave GRIB message count mismatch");
   return {{}, output, scan.message_count, scan.byte_count, inspection};

@@ -307,6 +307,8 @@ void TestEnvironmentGeneration() {
   Check(v2_inspection["current_component_counts"]["u_49"].asUInt64() == 4 &&
             v2_inspection["current_component_counts"]["v_50"].asUInt64() == 4,
         "v2 total generation preserves GRIB current parameter 49/50 output");
+  Check(v2_inspection["message_count"].asUInt64() == 8,
+        "v2 masked coastal output remains encodable as GRIB currents");
 
   const auto weather = std::filesystem::temp_directory_path() /
                        "environmental-grib-xtd-weather-wave.grb2";
@@ -469,7 +471,7 @@ void TestMonthlyCentreInterpolationAndMask() {
   const auto masked = reader.Predict(
       PointGrid(45.0, -1.0), {times.front()},
       eg::OfflineCurrentMode::kTideAndExpectedSeasonalCirculation);
-  Check(masked[0].has_mask() && !masked[0].mask[0] &&
+  Check(masked[0].has_mask() && masked[0].mask[0] &&
             !std::isfinite(masked[0].u_mps[0]),
         "missing residual interpolation remains missing rather than zero");
   std::filesystem::remove(path);

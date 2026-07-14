@@ -20,8 +20,6 @@ namespace environmental_grib {
 namespace {
 constexpr const char* kDataset = "cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i";
 constexpr const char* kProduct = "NWSHELF_ANALYSISFORECAST_PHY_004_013";
-constexpr const char* kMetadataRoot =
-    "https://s3.waw3-1.cloudferro.com/mdl-metadata/metadata";
 constexpr const char* kTokenUrl =
     "https://auth.marine.copernicus.eu/realms/MIS/protocol/openid-connect/token";
 constexpr const char* kUserInfoUrl =
@@ -105,7 +103,7 @@ Json::Value ParseJson(const std::vector<unsigned char>& bytes,
 
 std::string QuerySuffix(const std::string& username) {
   std::ostringstream value;
-  value << "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.1";
+  value << "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.2";
   if (!username.empty()) {
     value << "&x-cop-user=";
     for (unsigned char c : username) {
@@ -119,22 +117,6 @@ std::string QuerySuffix(const std::string& username) {
 std::vector<unsigned char> Get(BinaryDownload& download, const std::string& url,
                                const CopernicusRequest& request) {
   return download(url + QuerySuffix(request.username), request.timeout_seconds);
-}
-
-std::string DiscoverDatasetItem(BinaryDownload& download,
-                                const CopernicusRequest& request) {
-  const std::string product_url = std::string(kMetadataRoot) + "/" + kProduct +
-                                  "/product.stac.json";
-  const auto product = ParseJson(Get(download, product_url, request), "Copernicus product STAC");
-  std::vector<std::string> matches;
-  for (const auto& link : product["links"]) {
-    if (link["rel"].asString() != "item") continue;
-    const auto href = link["href"].asString();
-    if (href.find(kDataset) != std::string::npos) matches.push_back(href);
-  }
-  if (matches.empty()) throw ValidationError("Copernicus STAC does not list the requested NWS current dataset");
-  std::sort(matches.begin(), matches.end());
-  return std::string(kMetadataRoot) + "/" + kProduct + "/" + matches.back();
 }
 
 struct Axis { double minimum{}, maximum{}, step{}; std::size_t size{}; };
@@ -214,12 +196,15 @@ CopernicusResult GenerateCopernicusNws(const CopernicusRequest& request,
     throw ValidationError("Copernicus username and password are required");
   if (std::filesystem::exists(request.output) && !request.overwrite)
     throw ValidationError("output already exists: " + request.output.string());
-  if (!download) download = CurlHttpGet;
+  if (!download)
+    download = BinaryDownload(MakeRetryingHttpGet(
+        {}, "Copernicus NWS current", {}, {5, 1000, 8000}));
   if (!validate_credentials) validate_credentials = ValidateCredentialsImpl;
   if (!validate_credentials(request.username, request.password, request.timeout_seconds))
     throw ValidationError("invalid Copernicus username or password");
-  const auto item_url = DiscoverDatasetItem(download, request);
-  const auto item = ParseJson(Get(download, item_url, request), "Copernicus dataset STAC");
+  const auto dataset = DiscoverArcoDataset(
+      kProduct, kDataset, request.username, download, request.timeout_seconds);
+  const auto& item = dataset.item;
   const auto& asset = item["assets"]["timeChunked"];
   const std::string root = asset["href"].asString();
   if (root.empty()) throw ValidationError("Copernicus dataset has no timeChunked Zarr asset");
@@ -231,6 +216,11 @@ CopernicusResult GenerateCopernicusNws(const CopernicusRequest& request,
     throw ValidationError("requested bbox is outside Copernicus NWS coverage");
   CopernicusResult result{request.output, 0, 0, kDataset, item["id"].asString(), root,
                           Json::Value(Json::objectValue)};
+  result.summary["provider"] = request.provider;
+  result.summary["dataset_id"] = result.dataset_id;
+  result.summary["dataset_version"] = result.dataset_version;
+  result.summary["metadata_root"] = dataset.metadata_root;
+  result.summary["service"] = "Copernicus Marine ARCO time-chunked Zarr v2";
   if (request.dry_run) return result;
   const auto requested_times = BuildTimeSequence(request.start, request.hours, request.step_hours);
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
@@ -269,10 +259,6 @@ CopernicusResult GenerateCopernicusNws(const CopernicusRequest& request,
   const auto inspection = InspectGrib(request.output);
   result.message_count = inspection["message_count"].asUInt64();
   result.byte_count = std::filesystem::file_size(request.output);
-  result.summary["provider"] = request.provider;
-  result.summary["dataset_id"] = result.dataset_id;
-  result.summary["dataset_version"] = result.dataset_version;
-  result.summary["service"] = "Copernicus Marine ARCO time-chunked Zarr v2";
   result.summary["grid_points"] = Json::UInt64(grid.size());
   result.summary["time_count"] = Json::UInt64(requested_times.size());
   return result;
@@ -289,29 +275,40 @@ Json::Value CopernicusResultJson(const CopernicusResult& result) {
   return value;
 }
 
-CopernicusResult GenerateCopernicusGlobal(
-    const CopernicusRequest& request, BinaryDownload download,
+CopernicusResult GenerateCopernicusArcoCurrent(
+    const CopernicusRequest& request, const std::string& expected_provider,
+    const std::string& provider_label, const std::string& product_id,
+    const std::string& dataset_id, BinaryDownload download,
     CredentialValidator validate_credentials) {
   request.bbox.Validate();
-  if (request.provider != "copernicus_global")
-    throw UnsupportedSourceError("global Copernicus generator requires provider copernicus_global");
+  if (request.provider != expected_provider)
+    throw UnsupportedSourceError(provider_label +
+                                 " generator requires provider " +
+                                 expected_provider);
   if (request.hours < 0 || request.step_hours <= 0)
     throw ValidationError("Copernicus hours must be non-negative and step must be positive");
   if (request.username.empty() || request.password.empty())
     throw ValidationError("Copernicus username and password are required");
   if (std::filesystem::exists(request.output) && !request.overwrite)
     throw ValidationError("output already exists: " + request.output.string());
-  if (!download) download = CurlHttpGet;
+  if (!download)
+    download = BinaryDownload(MakeRetryingHttpGet(
+        {}, provider_label, {}, {5, 1000, 8000}));
   if (!validate_credentials) validate_credentials = ValidateCredentialsImpl;
   if (!validate_credentials(request.username, request.password, request.timeout_seconds))
     throw ValidationError("invalid Copernicus username or password");
   const auto dataset = DiscoverArcoDataset(
-      "GLOBAL_ANALYSISFORECAST_PHY_001_024",
-      "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m", request.username, download,
+      product_id, dataset_id, request.username, download,
       request.timeout_seconds);
   CopernicusResult result{request.output, 0, 0, dataset.dataset_id,
                           dataset.version_id, dataset.service_url,
                           Json::Value(Json::objectValue)};
+  result.summary["provider"] = request.provider;
+  result.summary["dataset_id"] = result.dataset_id;
+  result.summary["dataset_version"] = result.dataset_version;
+  result.summary["metadata_root"] = dataset.metadata_root;
+  result.summary["service"] =
+      "Copernicus Marine ARCO spatially chunked time-series";
   if (request.dry_run) return result;
   const auto times = BuildTimeSequence(request.start, request.hours, request.step_hours);
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
@@ -337,13 +334,40 @@ CopernicusResult GenerateCopernicusGlobal(
   const auto inspection = InspectGrib(request.output);
   result.message_count = inspection["message_count"].asUInt64();
   result.byte_count = std::filesystem::file_size(request.output);
-  result.summary["provider"] = request.provider;
-  result.summary["dataset_id"] = result.dataset_id;
-  result.summary["dataset_version"] = result.dataset_version;
-  result.summary["service"] = "Copernicus Marine ARCO spatially chunked time-series";
   result.summary["grid_points"] = Json::UInt64(grid.size());
   result.summary["time_count"] = Json::UInt64(times.size());
   return result;
+}
+
+CopernicusResult GenerateCopernicusGlobal(
+    const CopernicusRequest& request, BinaryDownload download,
+    CredentialValidator validate_credentials) {
+  return GenerateCopernicusArcoCurrent(
+      request, "copernicus_global", "Copernicus Global current",
+      "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+      "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m", std::move(download),
+      std::move(validate_credentials));
+}
+
+CopernicusResult GenerateCopernicusIbi(
+    const CopernicusRequest& request, BinaryDownload download,
+    CredentialValidator validate_credentials) {
+  return GenerateCopernicusArcoCurrent(
+      request, "copernicus_ibi", "Copernicus IBI current",
+      "IBI_ANALYSISFORECAST_PHY_005_001",
+      "cmems_mod_ibi_phy_anfc_0.027deg-2D_PT1H-m", std::move(download),
+      std::move(validate_credentials));
+}
+
+CopernicusResult GenerateCopernicusMediterranean(
+    const CopernicusRequest& request, BinaryDownload download,
+    CredentialValidator validate_credentials) {
+  return GenerateCopernicusArcoCurrent(
+      request, "copernicus_mediterranean",
+      "Copernicus Mediterranean current",
+      "MEDSEA_ANALYSISFORECAST_PHY_006_013",
+      "cmems_mod_med_phy-cur_anfc_4.2km-2D_PT1H-m", std::move(download),
+      std::move(validate_credentials));
 }
 
 }  // namespace environmental_grib

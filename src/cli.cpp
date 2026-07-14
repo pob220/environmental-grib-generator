@@ -318,9 +318,16 @@ int GenerateCopernicus(const std::vector<std::string>& args) {
   if (!have_bbox || !have_start || request.output.empty())
     throw eg::ValidationError(
         "generate-copernicus requires --bbox, --start, and --output");
-  PrintJson(eg::CopernicusResultJson(request.provider == "copernicus_global"
-                                         ? eg::GenerateCopernicusGlobal(request)
-                                         : eg::GenerateCopernicusNws(request)));
+  eg::CopernicusResult result;
+  if (request.provider == "copernicus_global")
+    result = eg::GenerateCopernicusGlobal(request);
+  else if (request.provider == "copernicus_ibi")
+    result = eg::GenerateCopernicusIbi(request);
+  else if (request.provider == "copernicus_mediterranean")
+    result = eg::GenerateCopernicusMediterranean(request);
+  else
+    result = eg::GenerateCopernicusNws(request);
+  PrintJson(eg::CopernicusResultJson(result));
   return 0;
 }
 
@@ -772,7 +779,7 @@ int SampleXtdPackage(const std::vector<std::string>& args) {
   const auto selected_mode = eg::ParseOfflineCurrentMode(mode);
   const auto fields = reader.Predict(grid, {*time}, selected_mode);
   const auto& field = fields.front();
-  const bool valid = (!field.has_mask() || field.mask.front()) &&
+  const bool valid = (!field.has_mask() || !field.mask.front()) &&
                      std::isfinite(field.u_mps.front()) &&
                      std::isfinite(field.v_mps.front());
   Json::Value result(Json::objectValue);

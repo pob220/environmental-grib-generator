@@ -634,7 +634,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
             request.copernicus_username, request.copernicus_password,
             workspace.File("waves.grb"), request.weather_grid_spacing_deg, true,
             BinaryDownload(MakeRetryingHttpGet(
-                http_get, "Copernicus Global Waves", progress)))
+                http_get, "Copernicus Global Waves", progress,
+                {5, 1000, 8000})))
             .output);
   } else if (request.include_waves && request.wave_provider != "gfs_wave" &&
              request.wave_provider != "copernicus_global_waves") {
@@ -650,6 +651,9 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   const bool cacheable_current = current_source == "marine_ie_irish_sea" ||
                                  current_source == "copernicus_nws" ||
                                  current_source == "copernicus_global" ||
+                                 current_source == "copernicus_ibi" ||
+                                 current_source ==
+                                     "copernicus_mediterranean" ||
                                  current_source == "noaa_rtofs_global";
   const std::string current_fingerprint =
       CurrentFingerprint(request, current_source);
@@ -679,7 +683,9 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                            http_get, "Marine.ie Irish Sea current", progress)))
                        .output);
   } else if (current_source == "copernicus_nws" ||
-             current_source == "copernicus_global") {
+             current_source == "copernicus_global" ||
+             current_source == "copernicus_ibi" ||
+             current_source == "copernicus_mediterranean") {
     CopernicusRequest current;
     current.bbox = request.bbox;
     current.start = request.start;
@@ -691,16 +697,27 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     current.output = workspace.File("current.grb");
     current.overwrite = true;
     current.provider = current_source;
-    const std::string provider = current_source == "copernicus_global"
-                                     ? "Copernicus Global current"
-                                     : "Copernicus NWS current";
+    const std::string provider =
+        current_source == "copernicus_global"
+            ? "Copernicus Global current"
+            : current_source == "copernicus_ibi"
+                  ? "Copernicus IBI current"
+                  : current_source == "copernicus_mediterranean"
+                        ? "Copernicus Mediterranean current"
+                        : "Copernicus NWS current";
     Report(progress, "authenticating " + provider,
            "validating Copernicus Marine credentials");
-    const auto download =
-        BinaryDownload(MakeRetryingHttpGet(http_get, provider, progress));
-    const auto generated = current_source == "copernicus_global"
-                               ? GenerateCopernicusGlobal(current, download)
-                               : GenerateCopernicusNws(current, download);
+    const auto download = BinaryDownload(MakeRetryingHttpGet(
+        http_get, provider, progress, {5, 1000, 8000}));
+    CopernicusResult generated;
+    if (current_source == "copernicus_global")
+      generated = GenerateCopernicusGlobal(current, download);
+    else if (current_source == "copernicus_ibi")
+      generated = GenerateCopernicusIbi(current, download);
+    else if (current_source == "copernicus_mediterranean")
+      generated = GenerateCopernicusMediterranean(current, download);
+    else
+      generated = GenerateCopernicusNws(current, download);
     streams.emplace_back("current", generated.output);
   } else if (current_source == "noaa_rtofs_global") {
     RtofsRequest current;
