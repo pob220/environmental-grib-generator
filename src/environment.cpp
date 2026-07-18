@@ -343,6 +343,41 @@ int CurrentHorizon(const std::string& source, int requested) {
   return requested;
 }
 
+constexpr int kAutoCycleAllowanceHours = 24;
+
+std::optional<TimePoint> InspectionTime(const Json::Value& inspection,
+                                        const char* key) {
+  if (!inspection.isMember(key) || !inspection[key].isString())
+    return std::nullopt;
+  const std::string value = inspection[key].asString();
+  if (value.size() != 13 || value[8] != 'T') return std::nullopt;
+  return ParseUtcDateTime(value.substr(0, 4) + "-" + value.substr(4, 2) +
+                          "-" + value.substr(6, 2) + "T" +
+                          value.substr(9, 2) + ":" + value.substr(11, 2) +
+                          ":00Z");
+}
+
+struct ComponentRun {
+  bool complete{false};
+  std::optional<TimePoint> first_valid;
+  std::optional<TimePoint> last_valid;
+};
+
+bool CoversRequestedWindow(const ComponentRun& run,
+                           const EnvironmentRequest& request) {
+  const auto requested_end = request.start + std::chrono::hours(request.hours);
+  return run.complete && run.first_valid && run.last_valid &&
+         *run.first_valid <= request.start && *run.last_valid >= requested_end;
+}
+
+int ThroughHour(const ComponentRun& run, const EnvironmentRequest& request,
+                int fallback) {
+  if (!run.last_valid) return fallback;
+  return static_cast<int>(std::chrono::duration_cast<std::chrono::hours>(
+                              *run.last_valid - request.start)
+                              .count());
+}
+
 EnvironmentRequest SingleComponentRequest(const EnvironmentRequest& request,
                                           const std::filesystem::path& output) {
   EnvironmentRequest child = request;
@@ -387,36 +422,57 @@ EnvironmentResult GenerateExtendedEnvironment(
   auto run = [&](const std::string& label, EnvironmentRequest child,
                  const std::string& component, const std::string& role,
                  const std::string& source, int through_hour,
-                 bool may_fallback) -> bool {
+                 bool may_fallback) -> ComponentRun {
     if (request.dry_run) {
       AddCoverage(coverage, component, role, source, through_hour, "planned");
-      return true;
+      coverage[component][coverage[component].size() - 1]
+              ["model_lead_hours_requested"] = child.hours;
+      return {true, std::nullopt, std::nullopt};
     }
     try {
       Report(progress, "generating " + component + " " + role,
-             source + " through hour " + std::to_string(through_hour));
+             source + " using model leads through hour " +
+                 std::to_string(child.hours));
       const auto result = GenerateEnvironment(child, http_get, now, progress);
       streams.emplace_back(label, result.output);
       inputs.push_back(result.output);
       if (!selected_cycle && result.selected_cycle)
         selected_cycle = result.selected_cycle;
-      AddCoverage(coverage, component, role, source, through_hour, "complete");
-      return true;
+      ComponentRun completed{true,
+                             InspectionTime(result.inspection,
+                                            "first_valid_time"),
+                             InspectionTime(result.inspection,
+                                            "last_valid_time")};
+      AddCoverage(coverage, component, role, source,
+                  ThroughHour(completed, request, through_hour), "complete");
+      Json::Value& item = coverage[component][coverage[component].size() - 1];
+      item["model_lead_hours_requested"] = child.hours;
+      if (completed.first_valid)
+        item["first_valid_time"] = FormatUtcDateTime(*completed.first_valid);
+      if (completed.last_valid)
+        item["last_valid_time"] = FormatUtcDateTime(*completed.last_valid);
+      return completed;
     } catch (const std::exception& error) {
       AddCoverage(coverage, component, role, source, through_hour, "failed",
                   error.what());
       if (!may_fallback) throw;
       Report(progress, component + " preferred source unavailable",
              source + ": " + error.what() + "; using selected fallback");
-      return false;
+      return {};
     }
   };
 
   if (request.weather_provider != "none") {
     const int primary_step =
         WeatherStep(request.weather_provider, request.step_hours, false);
+    const int weather_lead_target = AlignUp(
+        request.hours + (request.weather_provider == "existing-file"
+                             ? 0
+                             : kAutoCycleAllowanceHours),
+        primary_step);
     const int primary_hours = AlignDown(
-        WeatherHorizon(request.weather_provider, request.hours), primary_step);
+        WeatherHorizon(request.weather_provider, weather_lead_target),
+        primary_step);
     auto primary = SingleComponentRequest(
         request, workspace.File("extended-weather-preferred.grb"));
     primary.weather_provider = request.weather_provider;
@@ -425,30 +481,46 @@ EnvironmentResult GenerateExtendedEnvironment(
     const bool have_fallback =
         request.fallback_weather_provider != "none" &&
         request.fallback_weather_provider != request.weather_provider;
-    const bool primary_ok = run(
+    const ComponentRun primary_result = run(
         "weather-preferred", primary, "weather", "preferred",
         request.weather_provider, primary_hours, have_fallback);
-    if ((!primary_ok || primary_hours < request.hours) && have_fallback) {
+    const bool weather_needs_fallback =
+        request.dry_run ? primary_hours < weather_lead_target
+                        : !CoversRequestedWindow(primary_result, request);
+    if (weather_needs_fallback && have_fallback) {
       const int fallback_step = WeatherStep(
           request.fallback_weather_provider, request.step_hours, true);
-      const int fallback_hours = AlignUp(request.hours, fallback_step);
+      const int fallback_hours = AlignUp(
+          request.hours + kAutoCycleAllowanceHours, fallback_step);
       auto fallback = SingleComponentRequest(
           request, workspace.File("extended-weather-fallback.grb"));
       fallback.weather_provider = request.fallback_weather_provider;
       fallback.hours = fallback_hours;
       fallback.step_hours = fallback_step;
-      run("weather-fallback", fallback, "weather", "fallback",
-          request.fallback_weather_provider, fallback_hours, false);
-    } else if (!primary_ok) {
-      throw ValidationError("preferred weather source failed and no distinct "
-                            "weather fallback is selected");
+      const ComponentRun fallback_result =
+          run("weather-fallback", fallback, "weather", "fallback",
+              request.fallback_weather_provider, request.hours, false);
+      if (!request.dry_run &&
+          !CoversRequestedWindow(fallback_result, request))
+        throw ValidationError(
+            "selected weather fallback does not cover the requested UTC "
+            "window");
+    } else if (weather_needs_fallback) {
+      throw ValidationError(
+          "preferred weather source does not cover the requested UTC window "
+          "and no distinct weather fallback is selected");
     }
   }
 
   if (request.include_waves) {
     const int primary_step = std::max(1, request.wave_step_hours);
+    const int wave_lead_target = AlignUp(
+        request.hours + (request.wave_provider == "gfs_wave"
+                             ? kAutoCycleAllowanceHours
+                             : 0),
+        primary_step);
     const int primary_hours = AlignDown(
-        WaveHorizon(request.wave_provider, request.hours), primary_step);
+        WaveHorizon(request.wave_provider, wave_lead_target), primary_step);
     auto primary = SingleComponentRequest(
         request, workspace.File("extended-waves-preferred.grb"));
     primary.include_waves = true;
@@ -459,12 +531,16 @@ EnvironmentResult GenerateExtendedEnvironment(
     const bool have_fallback =
         request.fallback_wave_provider != "none" &&
         request.fallback_wave_provider != request.wave_provider;
-    const bool primary_ok =
+    const ComponentRun primary_result =
         run("waves-preferred", primary, "waves", "preferred",
             request.wave_provider, primary_hours, have_fallback);
-    if ((!primary_ok || primary_hours < request.hours) && have_fallback) {
+    const bool waves_need_fallback =
+        request.dry_run ? primary_hours < wave_lead_target
+                        : !CoversRequestedWindow(primary_result, request);
+    if (waves_need_fallback && have_fallback) {
       const int fallback_step = 3;
-      const int fallback_hours = AlignUp(request.hours, fallback_step);
+      const int fallback_hours = AlignUp(
+          request.hours + kAutoCycleAllowanceHours, fallback_step);
       auto fallback = SingleComponentRequest(
           request, workspace.File("extended-waves-fallback.grb"));
       fallback.include_waves = true;
@@ -472,11 +548,17 @@ EnvironmentResult GenerateExtendedEnvironment(
       fallback.hours = fallback_hours;
       fallback.step_hours = fallback_step;
       fallback.wave_step_hours = fallback_step;
-      run("waves-fallback", fallback, "waves", "fallback",
-          request.fallback_wave_provider, fallback_hours, false);
-    } else if (!primary_ok) {
-      throw ValidationError("preferred wave source failed and no distinct "
-                            "wave fallback is selected");
+      const ComponentRun fallback_result =
+          run("waves-fallback", fallback, "waves", "fallback",
+              request.fallback_wave_provider, request.hours, false);
+      if (!request.dry_run &&
+          !CoversRequestedWindow(fallback_result, request))
+        throw ValidationError(
+            "selected wave fallback does not cover the requested UTC window");
+    } else if (waves_need_fallback) {
+      throw ValidationError(
+          "preferred wave source does not cover the requested UTC window and "
+          "no distinct wave fallback is selected");
     }
   }
 
@@ -492,21 +574,31 @@ EnvironmentResult GenerateExtendedEnvironment(
     const bool have_fallback =
         request.fallback_current_source != "none" &&
         request.fallback_current_source != request.current_source;
-    const bool primary_ok =
+    const ComponentRun primary_result =
         run("current-preferred", primary, "current", "preferred",
             request.current_source, primary_hours, have_fallback);
-    if ((!primary_ok || primary_hours < request.hours) && have_fallback) {
+    const bool currents_need_fallback =
+        request.dry_run ? primary_hours < request.hours
+                        : !CoversRequestedWindow(primary_result, request);
+    if (currents_need_fallback && have_fallback) {
       const int fallback_hours = AlignUp(request.hours, primary_step);
       auto fallback = SingleComponentRequest(
           request, workspace.File("extended-current-fallback.grb"));
       fallback.current_source = request.fallback_current_source;
       fallback.hours = fallback_hours;
       fallback.step_hours = primary_step;
-      run("current-fallback", fallback, "current", "fallback",
-          request.fallback_current_source, fallback_hours, false);
-    } else if (!primary_ok) {
-      throw ValidationError("preferred current source failed and no distinct "
-                            "current fallback is selected");
+      const ComponentRun fallback_result =
+          run("current-fallback", fallback, "current", "fallback",
+              request.fallback_current_source, request.hours, false);
+      if (!request.dry_run &&
+          !CoversRequestedWindow(fallback_result, request))
+        throw ValidationError(
+            "selected current fallback does not cover the requested UTC "
+            "window");
+    } else if (currents_need_fallback) {
+      throw ValidationError(
+          "preferred current source does not cover the requested UTC window "
+          "and no distinct current fallback is selected");
     }
   }
 
@@ -532,7 +624,8 @@ EnvironmentResult GenerateExtendedEnvironment(
   Report(progress, "compositing extended environmental GRIB",
          "preferred model records take priority over fallback records");
   const auto merged = CompositeGribStreamsPreferFirst(
-      streams, request.output, request.overwrite);
+      streams, request.output, request.overwrite, std::nullopt,
+      request.start + std::chrono::hours(request.hours));
   diagnostics["forecast_extension"]["output_message_count"] =
       Json::UInt64(merged.output_message_count);
   return {request.output,

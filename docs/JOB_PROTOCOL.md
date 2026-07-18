@@ -57,6 +57,13 @@ valid time. The preferred input is retained when preferred and fallback inputs
 contain the same message tuple. The result `diagnostics.forecast_extension`
 object records planned/completed/failed coverage for each component.
 
+`hours` is measured from the absolute `start` time, not independently from each
+provider's model cycle. For cycle-based weather and wave products the generator
+requests sufficient additional model lead time, verifies decoded valid-time
+coverage, and removes records beyond `start + hours` from the final composite.
+Generation fails instead of publishing a partial component when neither the
+preferred source nor its selected fallback covers the requested UTC end.
+
 ## Discovery and compatibility
 
 `environmental-grib capabilities` reports the job schema, helper version,

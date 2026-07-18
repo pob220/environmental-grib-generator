@@ -1196,6 +1196,21 @@ int main() {
   Check(composite.output_message_count == 2,
         "forecast composite deterministically keeps preferred duplicates " +
             std::to_string(composite.output_message_count));
+  auto later_current = constant;
+  later_current.time = start + std::chrono::hours(3);
+  const auto ranged_input_path = Temp("ranged-input.grb");
+  eg::WriteGrib1Currents({constant, later_current}, ranged_input_path);
+  const auto ranged_output_path = Temp("ranged-output.grb");
+  const auto ranged = eg::CompositeGribStreamsPreferFirst(
+      {{"current", ranged_input_path}}, ranged_output_path, true,
+      std::nullopt, start);
+  Check(ranged.output_message_count == 2 &&
+            ranged.inspection["first_valid_time"].asString() ==
+                "20260701T0000" &&
+            ranged.inspection["last_valid_time"].asString() ==
+                "20260701T0000",
+        "forecast composite removes every component beyond the requested UTC "
+        "end");
 
   eg::EnvironmentRequest extension_plan;
   extension_plan.bbox = {-8.5, 50.5, -2.5, 56.5};
@@ -1217,8 +1232,42 @@ int main() {
             planned_weather[0]["source"].asString() == "ukmo_ukv" &&
             planned_weather[0]["through_hour"].asInt() == 120 &&
             planned_weather[1]["source"].asString() == "gfs" &&
-            planned_weather[1]["through_hour"].asInt() == 360,
-        "15-day extension plans UKV to 120h then GFS to 360h");
+            planned_weather[1]["through_hour"].asInt() == 360 &&
+            planned_weather[1]["model_lead_hours_requested"].asInt() == 384,
+        "15-day extension pads GFS model leads while targeting hour 360");
+
+  eg::EnvironmentRequest short_cycle_plan = extension_plan;
+  short_cycle_plan.hours = 72;
+  short_cycle_plan.output = Temp("short-cycle-plan.grb");
+  const auto short_cycle_weather =
+      eg::GenerateEnvironment(short_cycle_plan)
+          .diagnostics["forecast_extension"]["coverage"]["weather"];
+  Check(short_cycle_weather.size() == 1 &&
+            short_cycle_weather[0]["source"].asString() == "ukmo_ukv" &&
+            short_cycle_weather[0]["model_lead_hours_requested"].asInt() == 96,
+        "72-hour UTC window requests enough UKV lead time for an older cycle");
+
+  eg::EnvironmentRequest partial_weather;
+  partial_weather.bbox = {-8.5, 50.5, -2.5, 56.5};
+  partial_weather.start = start;
+  partial_weather.hours = 3;
+  partial_weather.step_hours = 3;
+  partial_weather.weather_provider = "existing-file";
+  partial_weather.weather_file = grib2_path;
+  partial_weather.extend_forecast = true;
+  partial_weather.current_source = "none";
+  partial_weather.output = Temp("partial-weather-rejected.grb");
+  partial_weather.overwrite = true;
+  bool partial_rejected = false;
+  try {
+    eg::GenerateEnvironment(partial_weather);
+  } catch (const eg::ValidationError& error) {
+    partial_rejected =
+        std::string(error.what()).find("does not cover the requested UTC window") !=
+        std::string::npos;
+  }
+  Check(partial_rejected,
+        "extension refuses a GRIB whose weather would end before currents");
 
   eg::EnvironmentRequest recovered_extension = extension_plan;
   recovered_extension.hours = 0;

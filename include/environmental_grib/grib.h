@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -63,6 +64,8 @@ MergeStreamsResult MergeGribStreams(
  * parameter/level/valid-time tuple. */
 MergeStreamsResult CompositeGribStreamsPreferFirst(
     const std::vector<std::pair<std::string, std::filesystem::path>>& inputs,
-    const std::filesystem::path& output, bool overwrite = false);
+    const std::filesystem::path& output, bool overwrite = false,
+    std::optional<TimePoint> valid_from = std::nullopt,
+    std::optional<TimePoint> valid_through = std::nullopt);
 
 }  // namespace environmental_grib

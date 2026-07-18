@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/geo.h"
 
 namespace environmental_grib {
 namespace {
@@ -83,6 +84,21 @@ void SetDouble(codes_handle* handle, const char* key, double value) {
 std::optional<long> GetLong(codes_handle* handle, const char* key) {
   long value = 0;
   return codes_get_long(handle, key, &value) == 0 ? std::optional<long>{value} : std::nullopt;
+}
+
+std::optional<TimePoint> ValidityTime(codes_handle* handle) {
+  const auto date = GetLong(handle, "validityDate");
+  const auto time = GetLong(handle, "validityTime");
+  if (!date || !time) return std::nullopt;
+  const int year = static_cast<int>(*date / 10000);
+  const int month = static_cast<int>((*date / 100) % 100);
+  const int day = static_cast<int>(*date % 100);
+  const int hour = static_cast<int>(*time / 100);
+  const int minute = static_cast<int>(*time % 100);
+  char value[32];
+  std::snprintf(value, sizeof(value), "%04d-%02d-%02dT%02d:%02d:00Z", year,
+                month, day, hour, minute);
+  return ParseUtcDateTime(value);
 }
 
 std::optional<double> GetDouble(codes_handle* handle, const char* key) {
@@ -441,7 +457,9 @@ MergeStreamsResult MergeGribStreams(
 
 MergeStreamsResult CompositeGribStreamsPreferFirst(
     const std::vector<std::pair<std::string, std::filesystem::path>>& inputs,
-    const std::filesystem::path& output, bool overwrite) {
+    const std::filesystem::path& output, bool overwrite,
+    std::optional<TimePoint> valid_from,
+    std::optional<TimePoint> valid_through) {
   if (inputs.empty())
     throw ValidationError("at least one GRIB input is required");
   if (std::filesystem::exists(output) &&
@@ -487,6 +505,12 @@ MergeStreamsResult CompositeGribStreamsPreferFirst(
           if (error == CODES_SUCCESS || std::feof(file.get())) break;
           Check(error, "reading " + label + " GRIB message");
           break;
+        }
+
+        if (const auto validity = ValidityTime(handle.get()); validity) {
+          if ((valid_from && *validity < *valid_from) ||
+              (valid_through && *validity > *valid_through))
+            continue;
         }
 
         auto short_name = GetString(handle.get(), "shortName");
