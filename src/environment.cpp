@@ -301,6 +301,255 @@ std::string ResolveCurrentSource(const EnvironmentRequest& request) {
   return selected->id;
 }
 
+int AlignDown(int hours, int step) {
+  return step > 0 ? hours - hours % step : hours;
+}
+
+int AlignUp(int hours, int step) {
+  if (step <= 0 || hours % step == 0) return hours;
+  return hours + step - hours % step;
+}
+
+int WeatherHorizon(const std::string& provider, int requested) {
+  if (provider == "ukmo_ukv" || provider == "dwd_icon_eu")
+    return std::min(requested, 120);
+  if (provider == "noaa_hrrr") return std::min(requested, 48);
+  return requested;
+}
+
+int WeatherStep(const std::string& provider, int requested, bool fallback) {
+  if (provider == "noaa_hrrr") return 1;
+  if (provider == "ukmo_ukv") return requested == 1 ? 1 : 3;
+  if (provider == "dwd_icon_eu") return requested == 1 ? 1 : 3;
+  if (provider == "ecmwf_aifs_open") return 6;
+  if (provider == "ecmwf_ifs_open") return 3;
+  if (provider == "gfs" && fallback) return 3;
+  return requested;
+}
+
+int WaveHorizon(const std::string& provider, int requested) {
+  if (provider == "copernicus_global_waves")
+    return std::min(requested, 240);
+  return requested;
+}
+
+int CurrentHorizon(const std::string& source, int requested) {
+  if (source == "marine_ie_irish_sea") return std::min(requested, 72);
+  if (source == "noaa_rtofs_global") return std::min(requested, 192);
+  if (source == "copernicus_nws" || source == "copernicus_global" ||
+      source == "copernicus_ibi" ||
+      source == "copernicus_mediterranean")
+    return std::min(requested, 240);
+  return requested;
+}
+
+EnvironmentRequest SingleComponentRequest(const EnvironmentRequest& request,
+                                          const std::filesystem::path& output) {
+  EnvironmentRequest child = request;
+  child.extend_forecast = false;
+  child.fallback_weather_provider = "none";
+  child.fallback_wave_provider = "none";
+  child.fallback_current_source = "none";
+  child.weather_provider = "none";
+  child.include_waves = false;
+  child.current_source = "none";
+  child.output = output;
+  child.overwrite = true;
+  child.keep_intermediate = request.keep_intermediate;
+  return child;
+}
+
+void AddCoverage(Json::Value& coverage, const std::string& component,
+                 const std::string& role, const std::string& source,
+                 int through_hour, const std::string& status,
+                 const std::string& detail = {}) {
+  Json::Value item(Json::objectValue);
+  item["role"] = role;
+  item["source"] = source;
+  item["through_hour"] = through_hour;
+  item["status"] = status;
+  if (!detail.empty()) item["detail"] = detail;
+  coverage[component].append(item);
+}
+
+EnvironmentResult GenerateExtendedEnvironment(
+    const EnvironmentRequest& request, HttpGet http_get,
+    std::optional<TimePoint> now, ProgressCallback progress) {
+  Workspace workspace(request.output, request.keep_intermediate);
+  std::vector<std::pair<std::string, std::filesystem::path>> streams;
+  std::vector<std::filesystem::path> inputs;
+  Json::Value diagnostics(Json::objectValue);
+  Json::Value& coverage = diagnostics["forecast_extension"]["coverage"];
+  diagnostics["forecast_extension"]["enabled"] = true;
+  diagnostics["forecast_extension"]["requested_hours"] = request.hours;
+  std::optional<std::string> selected_cycle;
+
+  auto run = [&](const std::string& label, EnvironmentRequest child,
+                 const std::string& component, const std::string& role,
+                 const std::string& source, int through_hour,
+                 bool may_fallback) -> bool {
+    if (request.dry_run) {
+      AddCoverage(coverage, component, role, source, through_hour, "planned");
+      return true;
+    }
+    try {
+      Report(progress, "generating " + component + " " + role,
+             source + " through hour " + std::to_string(through_hour));
+      const auto result = GenerateEnvironment(child, http_get, now, progress);
+      streams.emplace_back(label, result.output);
+      inputs.push_back(result.output);
+      if (!selected_cycle && result.selected_cycle)
+        selected_cycle = result.selected_cycle;
+      AddCoverage(coverage, component, role, source, through_hour, "complete");
+      return true;
+    } catch (const std::exception& error) {
+      AddCoverage(coverage, component, role, source, through_hour, "failed",
+                  error.what());
+      if (!may_fallback) throw;
+      Report(progress, component + " preferred source unavailable",
+             source + ": " + error.what() + "; using selected fallback");
+      return false;
+    }
+  };
+
+  if (request.weather_provider != "none") {
+    const int primary_step =
+        WeatherStep(request.weather_provider, request.step_hours, false);
+    const int primary_hours = AlignDown(
+        WeatherHorizon(request.weather_provider, request.hours), primary_step);
+    auto primary = SingleComponentRequest(
+        request, workspace.File("extended-weather-preferred.grb"));
+    primary.weather_provider = request.weather_provider;
+    primary.hours = primary_hours;
+    primary.step_hours = primary_step;
+    const bool have_fallback =
+        request.fallback_weather_provider != "none" &&
+        request.fallback_weather_provider != request.weather_provider;
+    const bool primary_ok = run(
+        "weather-preferred", primary, "weather", "preferred",
+        request.weather_provider, primary_hours, have_fallback);
+    if ((!primary_ok || primary_hours < request.hours) && have_fallback) {
+      const int fallback_step = WeatherStep(
+          request.fallback_weather_provider, request.step_hours, true);
+      const int fallback_hours = AlignUp(request.hours, fallback_step);
+      auto fallback = SingleComponentRequest(
+          request, workspace.File("extended-weather-fallback.grb"));
+      fallback.weather_provider = request.fallback_weather_provider;
+      fallback.hours = fallback_hours;
+      fallback.step_hours = fallback_step;
+      run("weather-fallback", fallback, "weather", "fallback",
+          request.fallback_weather_provider, fallback_hours, false);
+    } else if (!primary_ok) {
+      throw ValidationError("preferred weather source failed and no distinct "
+                            "weather fallback is selected");
+    }
+  }
+
+  if (request.include_waves) {
+    const int primary_step = std::max(1, request.wave_step_hours);
+    const int primary_hours = AlignDown(
+        WaveHorizon(request.wave_provider, request.hours), primary_step);
+    auto primary = SingleComponentRequest(
+        request, workspace.File("extended-waves-preferred.grb"));
+    primary.include_waves = true;
+    primary.wave_provider = request.wave_provider;
+    primary.hours = primary_hours;
+    primary.step_hours = primary_step;
+    primary.wave_step_hours = primary_step;
+    const bool have_fallback =
+        request.fallback_wave_provider != "none" &&
+        request.fallback_wave_provider != request.wave_provider;
+    const bool primary_ok =
+        run("waves-preferred", primary, "waves", "preferred",
+            request.wave_provider, primary_hours, have_fallback);
+    if ((!primary_ok || primary_hours < request.hours) && have_fallback) {
+      const int fallback_step = 3;
+      const int fallback_hours = AlignUp(request.hours, fallback_step);
+      auto fallback = SingleComponentRequest(
+          request, workspace.File("extended-waves-fallback.grb"));
+      fallback.include_waves = true;
+      fallback.wave_provider = request.fallback_wave_provider;
+      fallback.hours = fallback_hours;
+      fallback.step_hours = fallback_step;
+      fallback.wave_step_hours = fallback_step;
+      run("waves-fallback", fallback, "waves", "fallback",
+          request.fallback_wave_provider, fallback_hours, false);
+    } else if (!primary_ok) {
+      throw ValidationError("preferred wave source failed and no distinct "
+                            "wave fallback is selected");
+    }
+  }
+
+  if (request.current_source != "none") {
+    const int primary_step = std::max(1, request.step_hours);
+    const int primary_hours = AlignDown(
+        CurrentHorizon(request.current_source, request.hours), primary_step);
+    auto primary = SingleComponentRequest(
+        request, workspace.File("extended-current-preferred.grb"));
+    primary.current_source = request.current_source;
+    primary.hours = primary_hours;
+    primary.step_hours = primary_step;
+    const bool have_fallback =
+        request.fallback_current_source != "none" &&
+        request.fallback_current_source != request.current_source;
+    const bool primary_ok =
+        run("current-preferred", primary, "current", "preferred",
+            request.current_source, primary_hours, have_fallback);
+    if ((!primary_ok || primary_hours < request.hours) && have_fallback) {
+      const int fallback_hours = AlignUp(request.hours, primary_step);
+      auto fallback = SingleComponentRequest(
+          request, workspace.File("extended-current-fallback.grb"));
+      fallback.current_source = request.fallback_current_source;
+      fallback.hours = fallback_hours;
+      fallback.step_hours = primary_step;
+      run("current-fallback", fallback, "current", "fallback",
+          request.fallback_current_source, fallback_hours, false);
+    } else if (!primary_ok) {
+      throw ValidationError("preferred current source failed and no distinct "
+                            "current fallback is selected");
+    }
+  }
+
+  if (request.dry_run) {
+    return {request.output,
+            0,
+            0,
+            request.weather_provider + "->" +
+                request.fallback_weather_provider,
+            request.include_waves
+                ? request.wave_provider + "->" +
+                      request.fallback_wave_provider
+                : "none",
+            request.current_source + "->" + request.fallback_current_source,
+            std::nullopt,
+            {},
+            Json::Value(Json::objectValue),
+            diagnostics};
+  }
+  if (streams.empty())
+    throw ValidationError("forecast extension produced no environmental data");
+
+  Report(progress, "compositing extended environmental GRIB",
+         "preferred model records take priority over fallback records");
+  const auto merged = CompositeGribStreamsPreferFirst(
+      streams, request.output, request.overwrite);
+  diagnostics["forecast_extension"]["output_message_count"] =
+      Json::UInt64(merged.output_message_count);
+  return {request.output,
+          merged.output_message_count,
+          merged.byte_count,
+          request.weather_provider + "->" +
+              request.fallback_weather_provider,
+          request.include_waves
+              ? request.wave_provider + "->" + request.fallback_wave_provider
+              : "none",
+          request.current_source + "->" + request.fallback_current_source,
+          selected_cycle,
+          inputs,
+          merged.inspection,
+          diagnostics};
+}
+
 }  // namespace
 
 EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
@@ -318,6 +567,9 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       !request.include_waves)
     throw ValidationError(
         "at least one weather, wave, or current source must be enabled");
+  if (request.extend_forecast)
+    return GenerateExtendedEnvironment(request, std::move(http_get), now,
+                                       std::move(progress));
   const std::string current_source = ResolveCurrentSource(request);
   if (current_source == "tpxo-cache") {
     if (!request.input_cache)

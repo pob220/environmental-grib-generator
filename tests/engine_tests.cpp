@@ -388,6 +388,10 @@ int main() {
   job_request["hours"] = 24;
   job_request["stepHours"] = 3;
   job_request["weatherProvider"] = "gfs";
+  job_request["extendForecast"] = true;
+  job_request["fallbackWeatherProvider"] = "gfs";
+  job_request["fallbackWaveProvider"] = "gfs_wave";
+  job_request["fallbackCurrentSource"] = "offline-tidal";
   job_request["currentSource"] = "none";
   job_request["autoPrepareTpxoCache"] = true;
   job_request["output"] = "/tmp/environmental-grib-job-test.grb";
@@ -397,6 +401,10 @@ int main() {
   Check(parsed_job.request.bbox.west == -8.5 &&
             parsed_job.request.hours == 24 &&
             parsed_job.request.weather_provider == "gfs" &&
+            parsed_job.request.extend_forecast &&
+            parsed_job.request.fallback_weather_provider == "gfs" &&
+            parsed_job.request.fallback_wave_provider == "gfs_wave" &&
+            parsed_job.request.fallback_current_source == "offline-tidal" &&
             parsed_job.request.overwrite &&
             parsed_job.request.auto_prepare_tpxo_cache,
         "job protocol request mapping");
@@ -772,6 +780,11 @@ int main() {
   Check(eg::UkvForecastHours(60, 1).back() == 60 &&
             eg::UkvForecastHours(60, 1).size() == 57,
         "UKV hourly then three-hour cadence");
+  Check(eg::UkvForecastHours(120, 1).front() == 0 &&
+            eg::UkvForecastHours(120, 1)[54] == 54 &&
+            eg::UkvForecastHours(120, 1)[55] == 57 &&
+            eg::UkvForecastHours(120, 1).back() == 120,
+        "UKV mixed cadence retains the 54-to-57 hour interpolation boundary");
   Check(eg::UkvSourceKey("20260703T0000Z", 6, "wind_speed_at_10m") ==
             "uk-deterministic-2km/20260703T0000Z/"
             "20260703T0600Z-PT0006H00M-wind_speed_at_10m.nc",
@@ -1173,6 +1186,55 @@ int main() {
   const auto merged = eg::MergeGribStreams(
       {{"a", current_path}, {"b", current_path}}, merged_path, true);
   Check(merged.output_message_count == 4, "atomic stream merge");
+  const auto composite_path = Temp("composite.grb");
+  const auto composite = eg::CompositeGribStreamsPreferFirst(
+      {{"preferred", current_path}, {"fallback", current_path}},
+      composite_path, true);
+  Check(composite.input_message_counts.at("preferred") == 2 &&
+            composite.input_message_counts.at("fallback") == 2,
+        "forecast composite counts both source streams");
+  Check(composite.output_message_count == 2,
+        "forecast composite deterministically keeps preferred duplicates " +
+            std::to_string(composite.output_message_count));
+
+  eg::EnvironmentRequest extension_plan;
+  extension_plan.bbox = {-8.5, 50.5, -2.5, 56.5};
+  extension_plan.start = start;
+  extension_plan.hours = 360;
+  extension_plan.step_hours = 1;
+  extension_plan.weather_provider = "ukmo_ukv";
+  extension_plan.extend_forecast = true;
+  extension_plan.fallback_weather_provider = "gfs";
+  extension_plan.current_source = "none";
+  extension_plan.output = Temp("extension-plan.grb");
+  extension_plan.overwrite = true;
+  extension_plan.dry_run = true;
+  const auto planned_extension = eg::GenerateEnvironment(extension_plan);
+  const auto planned_weather =
+      planned_extension.diagnostics["forecast_extension"]["coverage"]
+                                   ["weather"];
+  Check(planned_weather.size() == 2 &&
+            planned_weather[0]["source"].asString() == "ukmo_ukv" &&
+            planned_weather[0]["through_hour"].asInt() == 120 &&
+            planned_weather[1]["source"].asString() == "gfs" &&
+            planned_weather[1]["through_hour"].asInt() == 360,
+        "15-day extension plans UKV to 120h then GFS to 360h");
+
+  eg::EnvironmentRequest recovered_extension = extension_plan;
+  recovered_extension.hours = 0;
+  recovered_extension.weather_provider = "unavailable-test-provider";
+  recovered_extension.output = Temp("recovered-extension.grb");
+  recovered_extension.dry_run = false;
+  const auto recovered = eg::GenerateEnvironment(
+      recovered_extension,
+      [&](const std::string&, double) { return downloaded; });
+  const auto recovered_weather =
+      recovered.diagnostics["forecast_extension"]["coverage"]["weather"];
+  Check(recovered.message_count > 0 && recovered_weather.size() == 2 &&
+            recovered_weather[0]["status"].asString() == "failed" &&
+            recovered_weather[1]["source"].asString() == "gfs" &&
+            recovered_weather[1]["status"].asString() == "complete",
+        "selected long-range weather recovers a failed preferred provider");
 
   const auto netcdf_path = Temp("currents.nc");
   WriteNetCDFFixture(netcdf_path, "cm/s");
@@ -1235,6 +1297,8 @@ int main() {
                            current_path,
                            grib2_path,
                            merged_path,
+                           composite_path,
+                           recovered_extension.output,
                            netcdf_path,
                            wave_netcdf,
                            wave_grib,

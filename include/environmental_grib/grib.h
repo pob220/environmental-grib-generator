@@ -59,5 +59,10 @@ GribWriteSummary WriteRegularLatLonGrib2(
 MergeStreamsResult MergeGribStreams(
     const std::vector<std::pair<std::string, std::filesystem::path>>& inputs,
     const std::filesystem::path& output, bool overwrite = false);
+/** Merge GRIBs in priority order, retaining the first message for each
+ * parameter/level/valid-time tuple. */
+MergeStreamsResult CompositeGribStreamsPreferFirst(
+    const std::vector<std::pair<std::string, std::filesystem::path>>& inputs,
+    const std::filesystem::path& output, bool overwrite = false);
 
 }  // namespace environmental_grib

@@ -20,6 +20,10 @@ struct EnvironmentRequest {
   std::string cycle{"auto"};
   std::optional<std::string> date;
   std::string weather_provider{"gfs"};
+  bool extend_forecast{false};
+  std::string fallback_weather_provider{"none"};
+  std::string fallback_wave_provider{"none"};
+  std::string fallback_current_source{"none"};
   std::string weather_preset{"routing"};
   double weather_grid_spacing_deg{0.025};
   std::optional<std::filesystem::path> weather_file;

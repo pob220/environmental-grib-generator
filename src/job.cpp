@@ -90,6 +90,14 @@ GeneratorJob ParseGeneratorJob(const Json::Value& value) {
   if (!date.empty()) job.request.date = date;
   job.request.weather_provider =
       String(request, "weatherProvider", "gfs");
+  job.request.extend_forecast =
+      Boolean(request, "extendForecast", false);
+  job.request.fallback_weather_provider =
+      String(request, "fallbackWeatherProvider", "none");
+  job.request.fallback_wave_provider =
+      String(request, "fallbackWaveProvider", "none");
+  job.request.fallback_current_source =
+      String(request, "fallbackCurrentSource", "none");
   job.request.weather_preset =
       String(request, "weatherPreset", "routing");
   job.request.weather_grid_spacing_deg =
@@ -147,6 +155,11 @@ Json::Value GeneratorCapabilitiesJson() {
        "dwd_icon_eu", "ecmwf_ifs_open", "ecmwf_aifs_open"});
   value["waveProviders"] =
       StringArray({"gfs_wave", "copernicus_global_waves"});
+  value["forecastExtension"] = true;
+  value["fallbackWeatherProviders"] = StringArray({"none", "gfs"});
+  value["fallbackWaveProviders"] = StringArray({"none", "gfs_wave"});
+  value["fallbackCurrentSources"] =
+      StringArray({"none", "offline-tidal"});
   value["currentSources"] = StringArray(
       {"none", "auto", "existing-file", "offline-tidal", "tpxo",
        "tpxo-cache", "netcdf", "synthetic", "marine_ie_irish_sea",

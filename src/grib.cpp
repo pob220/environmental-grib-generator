@@ -439,4 +439,110 @@ MergeStreamsResult MergeGribStreams(
   }
 }
 
+MergeStreamsResult CompositeGribStreamsPreferFirst(
+    const std::vector<std::pair<std::string, std::filesystem::path>>& inputs,
+    const std::filesystem::path& output, bool overwrite) {
+  if (inputs.empty())
+    throw ValidationError("at least one GRIB input is required");
+  if (std::filesystem::exists(output) &&
+      std::filesystem::is_directory(output))
+    throw ValidationError("output must be a file path, not a directory");
+  if (std::filesystem::exists(output) && !overwrite)
+    throw ValidationError("output already exists: " + output.string() +
+                          "; use --overwrite to replace it");
+
+  std::map<std::string, std::size_t> counts;
+  for (const auto& [label, path] : inputs) {
+    if (!std::filesystem::is_regular_file(path))
+      throw ValidationError(label + " GRIB not found: " + path.string());
+    counts[label] = ScanGribMessages(path).message_count;
+  }
+
+  std::filesystem::create_directories(
+      output.parent_path().empty() ? "." : output.parent_path());
+  const auto temporary = TemporarySibling(output);
+  std::set<std::string> retained;
+  std::size_t output_count = 0;
+  try {
+    std::ofstream destination(temporary, std::ios::binary | std::ios::trunc);
+    if (!destination)
+      throw ValidationError("unable to create composite GRIB temporary file");
+
+    for (const auto& [label, path] : inputs) {
+      FILE* raw = std::fopen(path.c_str(), "rb");
+      if (!raw)
+        throw ValidationError("unable to open " + label + " GRIB: " +
+                              path.string());
+      struct FileCloser {
+        void operator()(FILE* value) const { std::fclose(value); }
+      };
+      std::unique_ptr<FILE, FileCloser> file(raw);
+      std::size_t source_index = 0;
+      while (true) {
+        int error = 0;
+        HandlePtr handle(codes_handle_new_from_file(
+                             nullptr, file.get(), PRODUCT_GRIB, &error),
+                         &codes_handle_delete);
+        if (!handle) {
+          if (error == CODES_SUCCESS || std::feof(file.get())) break;
+          Check(error, "reading " + label + " GRIB message");
+          break;
+        }
+
+        auto short_name = GetString(handle.get(), "shortName");
+        if (!short_name || short_name->empty() || *short_name == "unknown") {
+          if (const auto parameter =
+                  GetLong(handle.get(), "indicatorOfParameter"))
+            short_name = "parameter-" + std::to_string(*parameter);
+          else if (const auto parameter = GetLong(handle.get(), "paramId"))
+            short_name = "parameter-" + std::to_string(*parameter);
+        }
+        const auto level_type = GetString(handle.get(), "typeOfLevel")
+                                    .value_or("unknown-level");
+        const auto level = GetLong(handle.get(), "level");
+        const auto date = GetLong(handle.get(), "validityDate");
+        const auto time = GetLong(handle.get(), "validityTime");
+        std::string key;
+        if (short_name && date && time) {
+          key = *short_name + '|' + level_type + '|' +
+                std::to_string(level.value_or(0)) + '|' +
+                std::to_string(*date) + '|' +
+                std::to_string(*time);
+        } else {
+          // Preserve unusual messages which do not expose the standard
+          // semantic keys; they cannot safely be classified as duplicates.
+          key = label + "|unclassified|" + std::to_string(source_index);
+        }
+        ++source_index;
+        if (!retained.insert(key).second) continue;
+
+        const void* message = nullptr;
+        std::size_t length = 0;
+        Check(codes_get_message(handle.get(), &message, &length),
+              "reading encoded " + label + " GRIB message");
+        destination.write(static_cast<const char*>(message),
+                          static_cast<std::streamsize>(length));
+        if (!destination)
+          throw ValidationError("failed writing composite GRIB");
+        ++output_count;
+      }
+    }
+    destination.close();
+    const auto scan = ScanGribMessages(temporary);
+    if (scan.message_count != output_count)
+      throw ValidationError("composite GRIB message count mismatch");
+    Json::Value inspection = InspectGrib(temporary);
+    std::error_code error;
+    std::filesystem::rename(temporary, output, error);
+    if (error)
+      throw ValidationError("publishing composite GRIB failed: " +
+                            error.message());
+    return {counts, scan.message_count, scan.byte_count, inspection};
+  } catch (...) {
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw;
+  }
+}
+
 }  // namespace environmental_grib

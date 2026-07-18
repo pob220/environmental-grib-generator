@@ -26,7 +26,11 @@ contains one compact JSON object per line. Event types are `started`,
     "start": "2026-07-12T00:00:00Z",
     "hours": 72,
     "stepHours": 3,
-    "weatherProvider": "gfs",
+    "weatherProvider": "ukmo_ukv",
+    "extendForecast": true,
+    "fallbackWeatherProvider": "gfs",
+    "fallbackWaveProvider": "gfs_wave",
+    "fallbackCurrentSource": "offline-tidal",
     "weatherPreset": "routing",
     "includeWaves": true,
     "waveProvider": "gfs_wave",
@@ -45,6 +49,13 @@ contains one compact JSON object per line. Event types are `started`,
 
 Passwords must never be placed in a job file. The named environment variable
 is read by the helper after validating the schema.
+
+The forecast-extension fields are optional and default to disabled/`none` for
+backward compatibility. When enabled, component generators use known provider
+horizons and native cadences, then composite messages by parameter, level and
+valid time. The preferred input is retained when preferred and fallback inputs
+contain the same message tuple. The result `diagnostics.forecast_extension`
+object records planned/completed/failed coverage for each component.
 
 ## Discovery and compatibility
 
