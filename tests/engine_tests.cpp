@@ -232,7 +232,8 @@ void WriteRtofsFixture(const std::filesystem::path& path) {
 void WriteUkvFixture(const std::filesystem::path& path,
                      const std::string& variable_name,
                      const std::string& standard_name,
-                     const std::string& units, double value) {
+                     const std::string& units, double value,
+                     double semi_major = 6378137.0) {
   int file = -1;
   Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create UKV fixture");
   int y_dim = -1, x_dim = -1;
@@ -249,7 +250,7 @@ void WriteUkvFixture(const std::filesystem::path& path,
   Nc(nc_put_att_text(file, y_var, "standard_name", y_standard.size(), y_standard.c_str()), "UKV y standard name");
   const std::string mapping_name = "lambert_azimuthal_equal_area";
   Nc(nc_put_att_text(file, mapping, "grid_mapping_name", mapping_name.size(), mapping_name.c_str()), "UKV mapping name");
-  const double lat0 = 54.9, lon0 = -2.5, zero = 0.0, semi_major = 6378137.0, inverse_flattening = 298.257223563;
+  const double lat0 = 54.9, lon0 = -2.5, zero = 0.0, inverse_flattening = 298.257223563;
   Nc(nc_put_att_double(file, mapping, "latitude_of_projection_origin", NC_DOUBLE, 1, &lat0), "UKV lat0");
   Nc(nc_put_att_double(file, mapping, "longitude_of_projection_origin", NC_DOUBLE, 1, &lon0), "UKV lon0");
   Nc(nc_put_att_double(file, mapping, "false_easting", NC_DOUBLE, 1, &zero), "UKV false easting");
@@ -703,11 +704,15 @@ int main() {
   const auto ukv_temperature = Temp("ukv-temperature.nc");
   const auto ukv_speed = Temp("ukv-speed.nc");
   const auto ukv_direction = Temp("ukv-direction.nc");
+  const auto ukv_invalid_pressure = Temp("ukv-invalid-pressure.nc");
+  const auto ukv_fallback_output = Temp("ukv-fallback.grb2");
   const auto ukv_output = Temp("ukv.grb2");
   WriteUkvFixture(ukv_pressure, "pressure_at_mean_sea_level", "air_pressure_at_mean_sea_level", "Pa", 101500.0);
   WriteUkvFixture(ukv_temperature, "temperature_at_screen_level", "air_temperature", "K", 285.0);
   WriteUkvFixture(ukv_speed, "wind_speed_at_10m", "wind_speed", "m s-1", 10.0);
   WriteUkvFixture(ukv_direction, "wind_direction_at_10m", "wind_from_direction", "degree", 270.0);
+  WriteUkvFixture(ukv_invalid_pressure, "pressure_at_mean_sea_level",
+                  "air_pressure_at_mean_sea_level", "Pa", 101500.0, 0.0);
   auto bytes_from = [](const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     std::vector<unsigned char> bytes(static_cast<std::size_t>(input.tellg()));
@@ -735,6 +740,36 @@ int main() {
   Check(ukv.message_count == 4 &&
             eg::InspectGrib(ukv_output)["short_name_counts"]["10u"].asUInt64() == 1,
         "UKV projected NetCDF regrid and meteorological wind conversion");
+  eg::UkvRequest ukv_fallback_request = ukv_request;
+  ukv_fallback_request.output = ukv_fallback_output;
+  ukv_fallback_request.cycle = "auto";
+  ukv_fallback_request.date.reset();
+  const auto invalid_pressure_bytes = bytes_from(ukv_invalid_pressure);
+  const auto pressure_bytes = bytes_from(ukv_pressure);
+  const auto temperature_bytes = bytes_from(ukv_temperature);
+  const auto speed_bytes = bytes_from(ukv_speed);
+  const auto direction_bytes = bytes_from(ukv_direction);
+  const auto ukv_fallback = eg::GenerateUkv(
+      ukv_fallback_request,
+      [&](const std::string& url, double) {
+        if (url.find("pressure_at_mean_sea_level") != std::string::npos) {
+          return url.find("20260703T2100Z") != std::string::npos
+                     ? invalid_pressure_bytes
+                     : pressure_bytes;
+        }
+        if (url.find("temperature_at_screen_level") != std::string::npos)
+          return temperature_bytes;
+        if (url.find("wind_speed_at_10m") != std::string::npos)
+          return speed_bytes;
+        if (url.find("wind_direction_at_10m") != std::string::npos)
+          return direction_bytes;
+        throw std::runtime_error("unexpected UKV fallback URL");
+      },
+      eg::ParseUtcDateTime("2026-07-03T22:00:00Z"));
+  Check(ukv_fallback.cycle.date == "20260703" &&
+            ukv_fallback.cycle.cycle == "18" &&
+            ukv_fallback.message_count == 4,
+        "UKV automatic cycle selection rejects invalid projection metadata and falls back");
 #endif
   const auto environment_path = Temp("environment.grb");
   eg::EnvironmentRequest environment;
@@ -809,7 +844,9 @@ int main() {
     std::filesystem::remove(path, ignored);
   }
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
-  for (const auto& path : {ukv_pressure, ukv_temperature, ukv_speed, ukv_direction, ukv_output}) {
+  for (const auto& path : {ukv_pressure, ukv_temperature, ukv_speed,
+                           ukv_direction, ukv_invalid_pressure, ukv_output,
+                           ukv_fallback_output}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
   }

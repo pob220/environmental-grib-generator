@@ -159,15 +159,27 @@ class Projection {
  public:
   explicit Projection(const ProjectedField& field) {
     context_ = proj_context_create();
+    if (!context_) {
+      throw ValidationError("PROJ could not create a UKV projection context");
+    }
     std::ostringstream destination;
     destination << "+proj=laea +lat_0=" << field.lat0 << " +lon_0=" << field.lon0
                 << " +x_0=" << field.false_easting << " +y_0=" << field.false_northing
                 << " +a=" << field.semi_major << " +b=" << field.semi_minor
-                << " +units=m +no_defs";
+                << " +units=m +no_defs +type=crs";
     PJ* raw = proj_create_crs_to_crs(context_, "EPSG:4326", destination.str().c_str(), nullptr);
     projection_ = raw ? proj_normalize_for_visualization(context_, raw) : nullptr;
     if (raw) proj_destroy(raw);
-    if (!projection_) throw ValidationError("PROJ could not create UKV coordinate transformation");
+    if (!projection_) {
+      const int code = proj_context_errno(context_);
+      const char* detail = code == 0 ? nullptr : proj_context_errno_string(context_, code);
+      const std::string message =
+          std::string("PROJ could not create UKV coordinate transformation") +
+          (detail && *detail ? ": " + std::string(detail) : std::string{});
+      proj_context_destroy(context_);
+      context_ = nullptr;
+      throw ValidationError(message);
+    }
   }
   ~Projection() { if (projection_) proj_destroy(projection_); if (context_) proj_context_destroy(context_); }
   std::pair<double, double> Forward(double lon, double lat) const {
@@ -251,6 +263,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
   }
   if (!download) download = CurlHttpGet;
   std::string selected;
+  std::string last_rejection;
   std::map<std::pair<int, std::string>, std::filesystem::path> files;
   std::vector<std::string> urls;
   for (const auto& cycle : candidates) {
@@ -272,6 +285,26 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
         if (!out) throw ValidationError("writing UKV source file failed");
         files[{hour, short_name}] = path; urls.push_back(url);
       }
+#ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
+      // A newly published cycle can briefly contain a complete set of objects
+      // whose NetCDF projection metadata is not yet usable.  Validate every
+      // pressure field before selecting the cycle so automatic selection can
+      // fall back instead of failing after all downloads have completed.
+      for (int hour : hours) {
+        Projection projection(ReadProjectedField(files.at({hour, "prmsl"})));
+      }
+#endif
+    } catch (const std::exception& exception) {
+      complete = false;
+      last_rejection = cycle + ": " + exception.what();
+      for (const auto& [key, path] : files) { (void)key; std::error_code ignored; std::filesystem::remove(path, ignored); }
+      if (request.cycle != "auto") throw;
+      if (progress) {
+        Json::Value detail;
+        detail["cycle"] = cycle;
+        detail["reason"] = exception.what();
+        progress("rejecting incomplete or invalid Met Office UKV cycle", detail);
+      }
     } catch (...) {
       complete = false;
       for (const auto& [key, path] : files) { (void)key; std::error_code ignored; std::filesystem::remove(path, ignored); }
@@ -279,7 +312,11 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
     }
     if (complete) { selected = cycle; break; }
   }
-  if (selected.empty()) throw ValidationError("no complete UKV cycle was available");
+  if (selected.empty()) {
+    throw ValidationError(
+        std::string("no complete, valid UKV cycle was available") +
+        (last_rejection.empty() ? std::string{} : "; last rejection: " + last_rejection));
+  }
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   std::vector<Grib2Field> output_fields;
   for (int hour : hours) {
