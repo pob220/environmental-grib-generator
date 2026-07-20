@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -6,6 +7,8 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <vector>
 
 #include "environmental_grib/error.h"
 #include "environmental_grib/environment.h"
@@ -28,6 +31,25 @@ void Check(bool condition, const std::string& message) {
   if (!condition) {
     ++failures;
     std::cerr << "FAIL: " << message << '\n';
+  }
+}
+
+std::vector<std::filesystem::path> deferred_cleanup;
+
+void RemoveTestFile(const std::filesystem::path& path) {
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  if (error && std::find(deferred_cleanup.begin(), deferred_cleanup.end(),
+                         path) == deferred_cleanup.end()) {
+    deferred_cleanup.push_back(path);
+  }
+}
+
+void FinishDeferredCleanup() {
+  for (const auto& path : deferred_cleanup) {
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    Check(!error, "deferred XTD fixture cleanup: " + path.string());
   }
 }
 
@@ -100,7 +122,7 @@ void TestValidPackageAndInterpolation() {
         "V coefficient is bilinearly interpolated");
   Check(reader.statistics().tiles_loaded > 0,
         "regional query loads required tiles");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestTileBoundaryAndCacheBound() {
@@ -119,7 +141,7 @@ void TestTileBoundaryAndCacheBound() {
   Check(reader.statistics().peak_cache_bytes <= 4'000,
         "bounded cache remains within its byte limit");
   reader.ClearTileCache();
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestSupportedCoefficientEncodings() {
@@ -141,8 +163,8 @@ void TestSupportedCoefficientEncodings() {
   Check(std::abs(int12_cache.v_cm_s[1].imag() - int16_cache.v_cm_s[1].imag()) <
             1e-9,
         "both precision encodings preserve component ordering");
-  std::filesystem::remove(int12_path);
-  std::filesystem::remove(int16_path);
+  RemoveTestFile(int12_path);
+  RemoveTestFile(int16_path);
 }
 
 void TestLongitudeSeam() {
@@ -153,7 +175,7 @@ void TestLongitudeSeam() {
   const auto east = reader.LoadRegion(PointGrid(359.75, 0.0));
   Check(std::abs(west.u_cm_s[0].real() - east.u_cm_s[0].real()) < 1e-9,
         "longitude seam wraps deterministically");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestMaskAndOutsideCoverage() {
@@ -170,7 +192,7 @@ void TestMaskAndOutsideCoverage() {
   const auto outside = reader.LoadRegion(PointGrid(45.0, 91.0));
   Check(!std::isfinite(outside.u_cm_s[0].real()),
         "coordinate outside coverage remains missing");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestMalformedPackages() {
@@ -179,21 +201,21 @@ void TestMalformedPackages() {
     test::WriteXtdFixture(path);
     test::CorruptXtdFixtureByte(path, 0);
     CheckRejected([&] { eg::XtdReader reader(path); }, "corrupt magic");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("version");
     test::WriteXtdFixture(path);
     test::CorruptXtdFixtureByte(path, 8, 0x02);
     CheckRejected([&] { eg::XtdReader reader(path); }, "unsupported version");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("truncated");
     test::WriteXtdFixture(path);
     test::TruncateXtdFixture(path, 200);
     CheckRejected([&] { eg::XtdReader reader(path); }, "truncated package");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("index-auth");
@@ -201,7 +223,7 @@ void TestMalformedPackages() {
     const auto index_offset = ReadLe64At(path, 72);
     test::CorruptXtdFixtureByte(path, index_offset);
     CheckRejected([&] { eg::XtdReader reader(path); }, "invalid tile index");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("public-auth");
@@ -209,7 +231,7 @@ void TestMalformedPackages() {
     test::CorruptXtdFixtureByte(path, 520);
     CheckRejected([&] { eg::XtdReader reader(path); },
                   "modified authenticated public metadata");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("dimensions");
@@ -217,7 +239,7 @@ void TestMalformedPackages() {
     test::CorruptXtdFixtureByte(path, 24, 0xff);
     CheckRejected([&] { eg::XtdReader reader(path); },
                   "invalid or excessive grid dimensions");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("offset-overflow");
@@ -227,7 +249,7 @@ void TestMalformedPackages() {
     }
     CheckRejected([&] { eg::XtdReader reader(path); },
                   "overflowing payload offset");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("tile-auth");
@@ -237,7 +259,7 @@ void TestMalformedPackages() {
     eg::XtdReader reader(path);
     CheckRejected([&] { (void)reader.LoadRegion(PointGrid(315.0, 2.0)); },
                   "modified encrypted tile");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
 }
 
@@ -249,7 +271,7 @@ void TestEmptyTile() {
   eg::XtdReader reader(path);
   const auto cache = reader.LoadRegion(PointGrid(22.5, -1.5));
   Check(!std::isfinite(cache.u_cm_s[0].real()), "empty tile remains missing");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestEnvironmentGeneration() {
@@ -257,7 +279,7 @@ void TestEnvironmentGeneration() {
   const auto output = std::filesystem::temp_directory_path() /
                       "environmental-grib-offline-tidal.grb";
   test::WriteXtdFixture(package);
-  std::filesystem::remove(output);
+  RemoveTestFile(output);
 
   eg::EnvironmentRequest request;
   request.bbox = {0.0, -1.0, 90.0, 1.0};
@@ -284,8 +306,8 @@ void TestEnvironmentGeneration() {
   Check(inspection["current_component_counts"]["v_50"].asUInt64() == 4,
         "Offline Tidal writes four northward current messages");
 
-  std::filesystem::remove(package);
-  std::filesystem::remove(output);
+  RemoveTestFile(package);
+  RemoveTestFile(output);
 
   const auto v2_package = TempPath("environment-v2");
   const auto v2_output = std::filesystem::temp_directory_path() /
@@ -334,10 +356,10 @@ void TestEnvironmentGeneration() {
             mixed_inspection["short_name_counts"]["10u"].asUInt64() == 1 &&
             mixed_inspection["short_name_counts"]["swh"].asUInt64() == 1,
         "v2 currents merge without displacing weather or wave messages");
-  std::filesystem::remove(v2_package);
-  std::filesystem::remove(v2_output);
-  std::filesystem::remove(weather);
-  std::filesystem::remove(mixed);
+  RemoveTestFile(v2_package);
+  RemoveTestFile(v2_output);
+  RemoveTestFile(weather);
+  RemoveTestFile(mixed);
 }
 
 void TestBoundedRandomAccess() {
@@ -359,7 +381,7 @@ void TestBoundedRandomAccess() {
                             "overflow");
       },
       "bounded random access overflow");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestPackageDispatchAndExactTideParity() {
@@ -406,8 +428,8 @@ void TestPackageDispatchAndExactTideParity() {
       },
       "v1 total mode without residual");
 
-  std::filesystem::remove(v1_path);
-  std::filesystem::remove(v2_path);
+  RemoveTestFile(v1_path);
+  RemoveTestFile(v2_path);
 }
 
 void TestHarmonicResidualAndRegionalReads() {
@@ -439,7 +461,7 @@ void TestHarmonicResidualAndRegionalReads() {
         "regional query loads only interpolation-neighbour residual tiles");
   Check(statistics.uncertainty.tiles_loaded == 0,
         "current calculation does not load uncertainty tiles");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestMonthlyCentreInterpolationAndMask() {
@@ -474,7 +496,7 @@ void TestMonthlyCentreInterpolationAndMask() {
   Check(masked[0].has_mask() && masked[0].mask[0] &&
             !std::isfinite(masked[0].u_mps[0]),
         "missing residual interpolation remains missing rather than zero");
-  std::filesystem::remove(path);
+  RemoveTestFile(path);
 }
 
 void TestV2VerificationAndCorruption() {
@@ -487,7 +509,7 @@ void TestV2VerificationAndCorruption() {
           "full v2 verification checks component hashes");
     Check(result["climatological_uncertainty"]["tiles_loaded"].asUInt64() > 0,
           "full v2 verification authenticates uncertainty tiles");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("v2-version");
@@ -495,7 +517,7 @@ void TestV2VerificationAndCorruption() {
     test::CorruptXtdFixtureByte(path, 8, 0x03);
     CheckRejected([&] { eg::XtdPackageReader reader(path); },
                   "unsupported v2 version");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("v2-outer-auth");
@@ -503,7 +525,7 @@ void TestV2VerificationAndCorruption() {
     test::CorruptXtdFixtureByte(path, 520);
     CheckRejected([&] { eg::XtdPackageReader reader(path); },
                   "modified v2 public metadata");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("v2-reserved");
@@ -511,7 +533,7 @@ void TestV2VerificationAndCorruption() {
     test::CorruptXtdFixtureByte(path, 300);
     CheckRejected([&] { eg::XtdPackageReader reader(path); },
                   "nonzero v2 reserved header byte");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
   {
     const auto path = TempPath("v2-residual-auth");
@@ -539,7 +561,7 @@ void TestV2VerificationAndCorruption() {
               eg::OfflineCurrentMode::kTideAndExpectedSeasonalCirculation);
         },
         "modified residual tile");
-    std::filesystem::remove(path);
+    RemoveTestFile(path);
   }
 }
 
@@ -563,6 +585,7 @@ int main(int argc, char** argv) {
   TestHarmonicResidualAndRegionalReads();
   TestMonthlyCentreInterpolationAndMask();
   TestV2VerificationAndCorruption();
+  FinishDeferredCleanup();
   std::cout << "environmental_grib_xtd_tests failures=" << failures << '\n';
   return failures == 0 ? 0 : 1;
 }

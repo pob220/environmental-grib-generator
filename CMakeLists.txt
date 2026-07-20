@@ -39,6 +39,16 @@ endif()
 find_path(PROJ_INCLUDE_DIR proj.h HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES include)
 find_library(PROJ_LIBRARY NAMES proj HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES lib)
 
+if(MSVC)
+  set(ENVIRONMENTAL_GRIB_WINDOWS_UTF8_MANIFEST
+    "${CMAKE_CURRENT_SOURCE_DIR}/windows-utf8.manifest")
+  function(environmental_grib_enable_windows_utf8 target)
+    target_link_options(${target} PRIVATE
+      "/MANIFEST:EMBED"
+      "/MANIFESTINPUT:${ENVIRONMENTAL_GRIB_WINDOWS_UTF8_MANIFEST}")
+  endfunction()
+endif()
+
 add_library(environmental_grib_engine STATIC
   src/arco.cpp
   src/environment.cpp
@@ -87,10 +97,16 @@ endif()
 
 add_executable(environmental-grib src/cli.cpp)
 target_link_libraries(environmental-grib PRIVATE environmental_grib_engine)
+if(MSVC)
+  environmental_grib_enable_windows_utf8(environmental-grib)
+endif()
 
 if(BUILD_TESTING)
   add_executable(environmental_grib_tests tests/engine_tests.cpp)
   target_link_libraries(environmental_grib_tests PRIVATE environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_tests)
+  endif()
   add_test(NAME environmental_grib_tests COMMAND environmental_grib_tests)
 
   add_executable(environmental_grib_xtd_tests
@@ -98,6 +114,9 @@ if(BUILD_TESTING)
     tests/xtd_test_support.cpp
   )
   target_link_libraries(environmental_grib_xtd_tests PRIVATE environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_xtd_tests)
+  endif()
   add_test(NAME environmental_grib_xtd_tests COMMAND environmental_grib_xtd_tests)
 
   add_executable(environmental_grib_merge_tests
@@ -105,6 +124,9 @@ if(BUILD_TESTING)
   )
   target_link_libraries(environmental_grib_merge_tests PRIVATE
     environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_merge_tests)
+  endif()
   set(ENVIRONMENTAL_GRIB_FIXTURE_DIR
     "${CMAKE_BINARY_DIR}/functional-fixtures")
   add_test(NAME environmental_grib_merge_tests
