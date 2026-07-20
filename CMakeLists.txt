@@ -51,8 +51,13 @@ target_link_libraries(environmental_grib_engine
          PkgConfig::QHULL_R BZip2::BZip2
          PkgConfig::BLOSC PkgConfig::LIBZIP PkgConfig::SODIUM PkgConfig::ZSTD
 )
-target_compile_options(environmental_grib_engine PRIVATE
-  -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
+if(MSVC)
+  target_compile_options(environmental_grib_engine PRIVATE
+    /W4 /wd4324 /wd4458)
+else()
+  target_compile_options(environmental_grib_engine PRIVATE
+    -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
+endif()
 if(PROJ_INCLUDE_DIR AND PROJ_LIBRARY)
   target_include_directories(environmental_grib_engine PRIVATE ${PROJ_INCLUDE_DIR})
   target_link_libraries(environmental_grib_engine PUBLIC ${PROJ_LIBRARY})
@@ -73,6 +78,18 @@ if(BUILD_TESTING)
   )
   target_link_libraries(environmental_grib_xtd_tests PRIVATE environmental_grib_engine)
   add_test(NAME environmental_grib_xtd_tests COMMAND environmental_grib_xtd_tests)
+
+  add_executable(environmental_grib_merge_tests
+    tests/environmental_merge_tests.cpp
+  )
+  target_link_libraries(environmental_grib_merge_tests PRIVATE
+    environmental_grib_engine)
+  set(ENVIRONMENTAL_GRIB_FIXTURE_DIR
+    "${CMAKE_BINARY_DIR}/functional-fixtures")
+  add_test(NAME environmental_grib_merge_tests
+    COMMAND environmental_grib_merge_tests ${ENVIRONMENTAL_GRIB_FIXTURE_DIR})
+  set_tests_properties(environmental_grib_merge_tests PROPERTIES
+    FIXTURES_SETUP environmental_grib_combined_fixture)
 endif()
 
 install(TARGETS environmental_grib_engine environmental-grib

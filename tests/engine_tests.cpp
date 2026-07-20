@@ -6,7 +6,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <unistd.h>
 #include <netcdf.h>
 #include <bzlib.h>
 #include <blosc.h>
@@ -19,6 +18,7 @@
 #include "environmental_grib/grib.h"
 #include "environmental_grib/job.h"
 #include "environmental_grib/model.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/netcdf.h"
 #include "environmental_grib/providers.h"
 #include "environmental_grib/remote_currents.h"
@@ -370,7 +370,7 @@ std::vector<unsigned char> BloscFloat(const std::vector<float>& input) {
 
 std::filesystem::path Temp(const std::string& name) {
   return std::filesystem::temp_directory_path() /
-         ("environmental-grib-tests-" + std::to_string(::getpid()) + "-" +
+         ("environmental-grib-tests-" + std::to_string(eg::ProcessId()) + "-" +
           name);
 }
 }  // namespace
@@ -634,8 +634,7 @@ int main() {
   Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 96, registry)
                 ->id == "copernicus_nws",
         "NWS selected beyond Marine.ie duration");
-  Check(registry.Get("copernicus_ibi")
-                .SupportsBbox({-8.5, 50.5, -2.5, 56.0}) &&
+  Check(registry.Get("copernicus_ibi").SupportsBbox({-8.5, 50.5, -2.5, 56.0}) &&
             !registry.Get("copernicus_ibi")
                  .SupportsBbox({-8.5, 50.5, -2.5, 56.5}),
         "IBI provider enforces its published northern coverage boundary");
@@ -725,12 +724,35 @@ int main() {
   source_bytes.seekg(0);
   source_bytes.read(reinterpret_cast<char*>(downloaded.data()),
                     static_cast<std::streamsize>(downloaded.size()));
+  const auto weather_fixture = Temp("weather-fixture.grb2");
+  eg::WriteRegularLatLonGrib2(
+      grid, start,
+      {{0, "10u", std::vector<double>(grid.size(), 4.0), {}},
+       {0, "10v", std::vector<double>(grid.size(), -2.0), {}}},
+      weather_fixture);
+  const auto wave_fixture = Temp("wave-fixture.grb2");
+  eg::WriteRegularLatLonGrib2(
+      grid, start,
+      {{0, "swh", std::vector<double>(grid.size(), 1.5), {}},
+       {0, "perpw", std::vector<double>(grid.size(), 7.0), {}}},
+      wave_fixture);
+  const auto fixture_bytes = [](const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(input.tellg()));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+  };
+  const auto weather_downloaded = fixture_bytes(weather_fixture);
+  const auto wave_downloaded = fixture_bytes(wave_fixture);
   const auto weather_path = Temp("gfs.grb");
   eg::GFSRequest weather_request{{-8.5, 50.5, -2.5, 56.5}, weather_path, 6};
   weather_request.cycle = "00";
   weather_request.date = "20260701";
   const auto generated_weather = eg::GenerateGfs(
-      weather_request, [&](const std::string&, double) { return downloaded; });
+      weather_request,
+      [&](const std::string&, double) { return weather_downloaded; });
   Check(generated_weather.message_count == 6 &&
             generated_weather.urls.size() == 3,
         "GFS atomic segment assembly with injectable HTTP");
@@ -743,7 +765,7 @@ int main() {
   eg::GFSRequest icon_request{{-8.5, 50.5, -2.5, 56.5}, icon_path, 0};
   icon_request.cycle = "06";
   icon_request.date = "20260701";
-  const auto compressed_current = Bzip(downloaded);
+  const auto compressed_current = Bzip(weather_downloaded);
   const auto icon = eg::GenerateDwdIconEu(
       icon_request,
       [&](const std::string&, double) { return compressed_current; });
@@ -769,7 +791,7 @@ int main() {
                                           hrrr_inventory.end());
       },
       [&](const std::string&, std::size_t, std::size_t, double) {
-        return downloaded;
+        return weather_downloaded;
       });
   Check(hrrr.message_count == 8 && hrrr.urls.size() == 1,
         "HRRR indexed field assembly");
@@ -806,7 +828,7 @@ int main() {
                                           ecmwf_index.end());
       },
       [&](const std::string&, std::size_t, std::size_t, double) {
-        return downloaded;
+        return weather_downloaded;
       });
   Check(ecmwf.message_count == 8 && ecmwf.urls.size() == 1,
         "ECMWF index and range assembly");
@@ -887,7 +909,8 @@ int main() {
       "NWSHELF_ANALYSISFORECAST_PHY_004_013",
       "cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i", "test-user",
       [&](const std::string& url, double timeout) {
-        Check(timeout <= 20.0, "Copernicus metadata attempt timeout is bounded");
+        Check(timeout <= 20.0,
+              "Copernicus metadata attempt timeout is bounded");
         if (url.find("stac.marine.copernicus.eu/clients-config-v1") !=
             std::string::npos)
           return std::vector<unsigned char>(client_config.begin(),
@@ -908,8 +931,7 @@ int main() {
         throw std::runtime_error("unexpected fallback URL: " + url);
       });
   Check(primary_attempts == 1 && mirror_attempts == 2 &&
-            fallback_dataset.metadata_root.find("waw4-1") !=
-                std::string::npos,
+            fallback_dataset.metadata_root.find("waw4-1") != std::string::npos,
         "Copernicus metadata discovery falls back to official mirror");
   bool roots_reported = false;
   try {
@@ -917,8 +939,7 @@ int main() {
         "NWSHELF_ANALYSISFORECAST_PHY_004_013",
         "cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i", "test-user",
         [](const std::string& url, double) -> std::vector<unsigned char> {
-          if (url.find("clients-config-v1") != std::string::npos)
-            return {'{'};
+          if (url.find("clients-config-v1") != std::string::npos) return {'{'};
           throw std::runtime_error("unreachable");
         });
   } catch (const eg::ValidationError& error) {
@@ -1106,7 +1127,8 @@ int main() {
   environment.output = environment_path;
   environment.overwrite = true;
   const auto environment_result = eg::GenerateEnvironment(
-      environment, [&](const std::string&, double) { return downloaded; });
+      environment,
+      [&](const std::string&, double) { return weather_downloaded; });
   Check(environment_result.message_count == 8 &&
             environment_result.current_source == "existing-file" &&
             environment_result.selected_cycle == "20260701T0000Z",
@@ -1128,7 +1150,7 @@ int main() {
           if (url.rfind("ftp://", 0) == 0)
             throw eg::HttpDownloadError("simulated current outage", false);
           ++first_weather_requests;
-          return downloaded;
+          return weather_downloaded;
         });
   } catch (const eg::ValidationError&) {
     first_failed = true;
@@ -1142,7 +1164,7 @@ int main() {
       [&](const std::string& url, double) {
         if (url.rfind("ftp://", 0) == 0) return downloaded;
         ++resumed_weather_requests;
-        return downloaded;
+        return weather_downloaded;
       },
       std::nullopt,
       [&](const std::string& stage, const Json::Value&) {
@@ -1168,7 +1190,8 @@ int main() {
           if (url.rfind("ftp://", 0) == 0)
             throw eg::HttpDownloadError("simulated current outage", false);
           ++first_coupled_requests;
-          return downloaded;
+          return url.find("wave") != std::string::npos ? wave_downloaded
+                                                       : weather_downloaded;
         });
   } catch (const eg::ValidationError&) {
   }
@@ -1177,7 +1200,8 @@ int main() {
       coupled_resume, [&](const std::string& url, double) {
         if (url.rfind("ftp://", 0) == 0) return downloaded;
         ++resumed_coupled_requests;
-        return downloaded;
+        return url.find("wave") != std::string::npos ? wave_downloaded
+                                                     : weather_downloaded;
       });
   Check(first_coupled_requests == 2 && resumed_coupled_requests == 0 &&
             resumed_coupled.message_count == 6,
@@ -1188,8 +1212,8 @@ int main() {
   Check(merged.output_message_count == 4, "atomic stream merge");
   const auto composite_path = Temp("composite.grb");
   const auto composite = eg::CompositeGribStreamsPreferFirst(
-      {{"preferred", current_path}, {"fallback", current_path}},
-      composite_path, true);
+      {{"preferred", current_path}, {"fallback", current_path}}, composite_path,
+      true);
   Check(composite.input_message_counts.at("preferred") == 2 &&
             composite.input_message_counts.at("fallback") == 2,
         "forecast composite counts both source streams");
@@ -1202,15 +1226,14 @@ int main() {
   eg::WriteGrib1Currents({constant, later_current}, ranged_input_path);
   const auto ranged_output_path = Temp("ranged-output.grb");
   const auto ranged = eg::CompositeGribStreamsPreferFirst(
-      {{"current", ranged_input_path}}, ranged_output_path, true,
-      std::nullopt, start);
-  Check(ranged.output_message_count == 2 &&
-            ranged.inspection["first_valid_time"].asString() ==
-                "20260701T0000" &&
-            ranged.inspection["last_valid_time"].asString() ==
-                "20260701T0000",
-        "forecast composite removes every component beyond the requested UTC "
-        "end");
+      {{"current", ranged_input_path}}, ranged_output_path, true, std::nullopt,
+      start);
+  Check(
+      ranged.output_message_count == 2 &&
+          ranged.inspection["first_valid_time"].asString() == "20260701T0000" &&
+          ranged.inspection["last_valid_time"].asString() == "20260701T0000",
+      "forecast composite removes every component beyond the requested UTC "
+      "end");
 
   eg::EnvironmentRequest extension_plan;
   extension_plan.bbox = {-8.5, 50.5, -2.5, 56.5};
@@ -1226,8 +1249,8 @@ int main() {
   extension_plan.dry_run = true;
   const auto planned_extension = eg::GenerateEnvironment(extension_plan);
   const auto planned_weather =
-      planned_extension.diagnostics["forecast_extension"]["coverage"]
-                                   ["weather"];
+      planned_extension
+          .diagnostics["forecast_extension"]["coverage"]["weather"];
   Check(planned_weather.size() == 2 &&
             planned_weather[0]["source"].asString() == "ukmo_ukv" &&
             planned_weather[0]["through_hour"].asInt() == 120 &&
@@ -1262,9 +1285,9 @@ int main() {
   try {
     eg::GenerateEnvironment(partial_weather);
   } catch (const eg::ValidationError& error) {
-    partial_rejected =
-        std::string(error.what()).find("does not cover the requested UTC window") !=
-        std::string::npos;
+    partial_rejected = std::string(error.what())
+                           .find("does not cover the requested UTC window") !=
+                       std::string::npos;
   }
   Check(partial_rejected,
         "extension refuses a GRIB whose weather would end before currents");
@@ -1276,7 +1299,7 @@ int main() {
   recovered_extension.dry_run = false;
   const auto recovered = eg::GenerateEnvironment(
       recovered_extension,
-      [&](const std::string&, double) { return downloaded; });
+      [&](const std::string&, double) { return weather_downloaded; });
   const auto recovered_weather =
       recovered.diagnostics["forecast_extension"]["coverage"]["weather"];
   Check(recovered.message_count > 0 && recovered_weather.size() == 2 &&
@@ -1344,6 +1367,8 @@ int main() {
                            wrapped,
                            clean,
                            current_path,
+                           weather_fixture,
+                           wave_fixture,
                            grib2_path,
                            merged_path,
                            composite_path,

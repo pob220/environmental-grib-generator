@@ -5,12 +5,12 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
-#include <unistd.h>
 
 #include "environmental_grib/error.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/netcdf.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/providers.h"
 #include "environmental_grib/remote_currents.h"
 #include "environmental_grib/rtofs.h"
@@ -30,7 +30,7 @@ public:
       : keep_(keep) {
     path_ = output.parent_path().empty() ? std::filesystem::current_path()
                                          : output.parent_path();
-    path_ /= ".environmental-grib-" + std::to_string(::getpid());
+    path_ /= ".environmental-grib-" + std::to_string(ProcessId());
     std::filesystem::create_directories(path_);
   }
   ~Workspace() {
@@ -75,7 +75,7 @@ Json::Value ReadJson(const std::filesystem::path& path) {
 
 void WriteJsonAtomic(const std::filesystem::path& path,
                      const Json::Value& value) {
-  const auto temporary = path.string() + ".tmp-" + std::to_string(::getpid());
+  const auto temporary = path.string() + ".tmp-" + std::to_string(ProcessId());
   try {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "  ";
@@ -166,7 +166,8 @@ public:
             const std::filesystem::path& source,
             const std::optional<std::string>& selected_cycle = std::nullopt) {
     const auto [data, metadata] = Paths(stage, fingerprint);
-    const auto temporary = data.string() + ".tmp-" + std::to_string(::getpid());
+    const auto temporary =
+        data.string() + ".tmp-" + std::to_string(ProcessId());
     try {
       const auto scan = ScanGribMessages(source);
       if (scan.message_count == 0) return;
@@ -328,8 +329,7 @@ int WeatherStep(const std::string& provider, int requested, bool fallback) {
 }
 
 int WaveHorizon(const std::string& provider, int requested) {
-  if (provider == "copernicus_global_waves")
-    return std::min(requested, 240);
+  if (provider == "copernicus_global_waves") return std::min(requested, 240);
   return requested;
 }
 
@@ -337,8 +337,7 @@ int CurrentHorizon(const std::string& source, int requested) {
   if (source == "marine_ie_irish_sea") return std::min(requested, 72);
   if (source == "noaa_rtofs_global") return std::min(requested, 192);
   if (source == "copernicus_nws" || source == "copernicus_global" ||
-      source == "copernicus_ibi" ||
-      source == "copernicus_mediterranean")
+      source == "copernicus_ibi" || source == "copernicus_mediterranean")
     return std::min(requested, 240);
   return requested;
 }
@@ -351,10 +350,9 @@ std::optional<TimePoint> InspectionTime(const Json::Value& inspection,
     return std::nullopt;
   const std::string value = inspection[key].asString();
   if (value.size() != 13 || value[8] != 'T') return std::nullopt;
-  return ParseUtcDateTime(value.substr(0, 4) + "-" + value.substr(4, 2) +
-                          "-" + value.substr(6, 2) + "T" +
-                          value.substr(9, 2) + ":" + value.substr(11, 2) +
-                          ":00Z");
+  return ParseUtcDateTime(value.substr(0, 4) + "-" + value.substr(4, 2) + "-" +
+                          value.substr(6, 2) + "T" + value.substr(9, 2) + ":" +
+                          value.substr(11, 2) + ":00Z");
 }
 
 struct ComponentRun {
@@ -407,9 +405,10 @@ void AddCoverage(Json::Value& coverage, const std::string& component,
   coverage[component].append(item);
 }
 
-EnvironmentResult GenerateExtendedEnvironment(
-    const EnvironmentRequest& request, HttpGet http_get,
-    std::optional<TimePoint> now, ProgressCallback progress) {
+EnvironmentResult GenerateExtendedEnvironment(const EnvironmentRequest& request,
+                                              HttpGet http_get,
+                                              std::optional<TimePoint> now,
+                                              ProgressCallback progress) {
   Workspace workspace(request.output, request.keep_intermediate);
   std::vector<std::pair<std::string, std::filesystem::path>> streams;
   std::vector<std::filesystem::path> inputs;
@@ -438,11 +437,9 @@ EnvironmentResult GenerateExtendedEnvironment(
       inputs.push_back(result.output);
       if (!selected_cycle && result.selected_cycle)
         selected_cycle = result.selected_cycle;
-      ComponentRun completed{true,
-                             InspectionTime(result.inspection,
-                                            "first_valid_time"),
-                             InspectionTime(result.inspection,
-                                            "last_valid_time")};
+      ComponentRun completed{
+          true, InspectionTime(result.inspection, "first_valid_time"),
+          InspectionTime(result.inspection, "last_valid_time")};
       AddCoverage(coverage, component, role, source,
                   ThroughHour(completed, request, through_hour), "complete");
       Json::Value& item = coverage[component][coverage[component].size() - 1];
@@ -465,14 +462,14 @@ EnvironmentResult GenerateExtendedEnvironment(
   if (request.weather_provider != "none") {
     const int primary_step =
         WeatherStep(request.weather_provider, request.step_hours, false);
-    const int weather_lead_target = AlignUp(
-        request.hours + (request.weather_provider == "existing-file"
-                             ? 0
-                             : kAutoCycleAllowanceHours),
-        primary_step);
-    const int primary_hours = AlignDown(
-        WeatherHorizon(request.weather_provider, weather_lead_target),
-        primary_step);
+    const int weather_lead_target =
+        AlignUp(request.hours + (request.weather_provider == "existing-file"
+                                     ? 0
+                                     : kAutoCycleAllowanceHours),
+                primary_step);
+    const int primary_hours =
+        AlignDown(WeatherHorizon(request.weather_provider, weather_lead_target),
+                  primary_step);
     auto primary = SingleComponentRequest(
         request, workspace.File("extended-weather-preferred.grb"));
     primary.weather_provider = request.weather_provider;
@@ -481,17 +478,17 @@ EnvironmentResult GenerateExtendedEnvironment(
     const bool have_fallback =
         request.fallback_weather_provider != "none" &&
         request.fallback_weather_provider != request.weather_provider;
-    const ComponentRun primary_result = run(
-        "weather-preferred", primary, "weather", "preferred",
-        request.weather_provider, primary_hours, have_fallback);
+    const ComponentRun primary_result =
+        run("weather-preferred", primary, "weather", "preferred",
+            request.weather_provider, primary_hours, have_fallback);
     const bool weather_needs_fallback =
         request.dry_run ? primary_hours < weather_lead_target
                         : !CoversRequestedWindow(primary_result, request);
     if (weather_needs_fallback && have_fallback) {
-      const int fallback_step = WeatherStep(
-          request.fallback_weather_provider, request.step_hours, true);
-      const int fallback_hours = AlignUp(
-          request.hours + kAutoCycleAllowanceHours, fallback_step);
+      const int fallback_step = WeatherStep(request.fallback_weather_provider,
+                                            request.step_hours, true);
+      const int fallback_hours =
+          AlignUp(request.hours + kAutoCycleAllowanceHours, fallback_step);
       auto fallback = SingleComponentRequest(
           request, workspace.File("extended-weather-fallback.grb"));
       fallback.weather_provider = request.fallback_weather_provider;
@@ -500,8 +497,7 @@ EnvironmentResult GenerateExtendedEnvironment(
       const ComponentRun fallback_result =
           run("weather-fallback", fallback, "weather", "fallback",
               request.fallback_weather_provider, request.hours, false);
-      if (!request.dry_run &&
-          !CoversRequestedWindow(fallback_result, request))
+      if (!request.dry_run && !CoversRequestedWindow(fallback_result, request))
         throw ValidationError(
             "selected weather fallback does not cover the requested UTC "
             "window");
@@ -514,11 +510,11 @@ EnvironmentResult GenerateExtendedEnvironment(
 
   if (request.include_waves) {
     const int primary_step = std::max(1, request.wave_step_hours);
-    const int wave_lead_target = AlignUp(
-        request.hours + (request.wave_provider == "gfs_wave"
-                             ? kAutoCycleAllowanceHours
-                             : 0),
-        primary_step);
+    const int wave_lead_target =
+        AlignUp(request.hours + (request.wave_provider == "gfs_wave"
+                                     ? kAutoCycleAllowanceHours
+                                     : 0),
+                primary_step);
     const int primary_hours = AlignDown(
         WaveHorizon(request.wave_provider, wave_lead_target), primary_step);
     auto primary = SingleComponentRequest(
@@ -539,8 +535,8 @@ EnvironmentResult GenerateExtendedEnvironment(
                         : !CoversRequestedWindow(primary_result, request);
     if (waves_need_fallback && have_fallback) {
       const int fallback_step = 3;
-      const int fallback_hours = AlignUp(
-          request.hours + kAutoCycleAllowanceHours, fallback_step);
+      const int fallback_hours =
+          AlignUp(request.hours + kAutoCycleAllowanceHours, fallback_step);
       auto fallback = SingleComponentRequest(
           request, workspace.File("extended-waves-fallback.grb"));
       fallback.include_waves = true;
@@ -551,8 +547,7 @@ EnvironmentResult GenerateExtendedEnvironment(
       const ComponentRun fallback_result =
           run("waves-fallback", fallback, "waves", "fallback",
               request.fallback_wave_provider, request.hours, false);
-      if (!request.dry_run &&
-          !CoversRequestedWindow(fallback_result, request))
+      if (!request.dry_run && !CoversRequestedWindow(fallback_result, request))
         throw ValidationError(
             "selected wave fallback does not cover the requested UTC window");
     } else if (waves_need_fallback) {
@@ -590,8 +585,7 @@ EnvironmentResult GenerateExtendedEnvironment(
       const ComponentRun fallback_result =
           run("current-fallback", fallback, "current", "fallback",
               request.fallback_current_source, request.hours, false);
-      if (!request.dry_run &&
-          !CoversRequestedWindow(fallback_result, request))
+      if (!request.dry_run && !CoversRequestedWindow(fallback_result, request))
         throw ValidationError(
             "selected current fallback does not cover the requested UTC "
             "window");
@@ -606,11 +600,9 @@ EnvironmentResult GenerateExtendedEnvironment(
     return {request.output,
             0,
             0,
-            request.weather_provider + "->" +
-                request.fallback_weather_provider,
+            request.weather_provider + "->" + request.fallback_weather_provider,
             request.include_waves
-                ? request.wave_provider + "->" +
-                      request.fallback_wave_provider
+                ? request.wave_provider + "->" + request.fallback_wave_provider
                 : "none",
             request.current_source + "->" + request.fallback_current_source,
             std::nullopt,
@@ -631,8 +623,7 @@ EnvironmentResult GenerateExtendedEnvironment(
   return {request.output,
           merged.output_message_count,
           merged.byte_count,
-          request.weather_provider + "->" +
-              request.fallback_weather_provider,
+          request.weather_provider + "->" + request.fallback_weather_provider,
           request.include_waves
               ? request.wave_provider + "->" + request.fallback_wave_provider
               : "none",
@@ -978,9 +969,9 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
             request.bbox, request.start, request.hours, request.wave_step_hours,
             request.copernicus_username, request.copernicus_password,
             workspace.File("waves.grb"), request.weather_grid_spacing_deg, true,
-            BinaryDownload(MakeRetryingHttpGet(
-                http_get, "Copernicus Global Waves", progress,
-                {5, 1000, 8000})))
+            BinaryDownload(MakeRetryingHttpGet(http_get,
+                                               "Copernicus Global Waves",
+                                               progress, {5, 1000, 8000})))
             .output);
   } else if (request.include_waves && request.wave_provider != "gfs_wave" &&
              request.wave_provider != "copernicus_global_waves") {
@@ -997,8 +988,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                  current_source == "copernicus_nws" ||
                                  current_source == "copernicus_global" ||
                                  current_source == "copernicus_ibi" ||
-                                 current_source ==
-                                     "copernicus_mediterranean" ||
+                                 current_source == "copernicus_mediterranean" ||
                                  current_source == "noaa_rtofs_global";
   const std::string current_fingerprint =
       CurrentFingerprint(request, current_source);
@@ -1043,17 +1033,15 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     current.overwrite = true;
     current.provider = current_source;
     const std::string provider =
-        current_source == "copernicus_global"
-            ? "Copernicus Global current"
-            : current_source == "copernicus_ibi"
-                  ? "Copernicus IBI current"
-                  : current_source == "copernicus_mediterranean"
-                        ? "Copernicus Mediterranean current"
-                        : "Copernicus NWS current";
+        current_source == "copernicus_global" ? "Copernicus Global current"
+        : current_source == "copernicus_ibi"  ? "Copernicus IBI current"
+        : current_source == "copernicus_mediterranean"
+            ? "Copernicus Mediterranean current"
+            : "Copernicus NWS current";
     Report(progress, "authenticating " + provider,
            "validating Copernicus Marine credentials");
-    const auto download = BinaryDownload(MakeRetryingHttpGet(
-        http_get, provider, progress, {5, 1000, 8000}));
+    const auto download = BinaryDownload(
+        MakeRetryingHttpGet(http_get, provider, progress, {5, 1000, 8000}));
     CopernicusResult generated;
     if (current_source == "copernicus_global")
       generated = GenerateCopernicusGlobal(current, download);
@@ -1236,8 +1224,24 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     throw ValidationError("generation produced no environmental streams");
   Report(progress, "merging environmental GRIB",
          std::to_string(streams.size()) + " streams");
-  const auto merged =
-      MergeGribStreams(streams, request.output, request.overwrite);
+  EnvironmentalMergeRequest merge_request;
+  merge_request.output = request.output;
+  merge_request.overwrite = request.overwrite;
+  for (const auto& [label, path] : streams) {
+    if (label == "weather")
+      merge_request.weather = path;
+    else if (label == "current")
+      merge_request.current = path;
+    else if (label == "waves")
+      merge_request.waves = path;
+  }
+  const auto merged = MergeEnvironmentalGribs(merge_request);
+  if (!merged.success) {
+    std::ostringstream error;
+    error << "environmental GRIB merge validation failed";
+    for (const auto& detail : merged.errors) error << "; " << detail;
+    throw ValidationError(error.str());
+  }
   std::vector<std::filesystem::path> input_paths;
   for (const auto& [label, path] : streams) {
     (void)label;
@@ -1252,7 +1256,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
           current_source,
           selected_cycle,
           input_paths,
-          merged.inspection,
+          merged.output_inspection,
           diagnostics};
 }
 

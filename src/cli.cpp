@@ -886,6 +886,28 @@ int Merge(const std::vector<std::string>& args) {
   return 0;
 }
 
+int MergeEnvironment(const std::vector<std::string>& args) {
+  eg::EnvironmentalMergeRequest request;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    if (args[i] == "--weather")
+      request.weather = RequireValue(args, i, args[i]);
+    else if (args[i] == "--current")
+      request.current = RequireValue(args, i, args[i]);
+    else if (args[i] == "--waves")
+      request.waves = RequireValue(args, i, args[i]);
+    else if (args[i] == "--output")
+      request.output = RequireValue(args, i, args[i]);
+    else if (args[i] == "--overwrite")
+      request.overwrite = true;
+    else
+      throw eg::ValidationError("unknown merge-environment-gribs option: " +
+                                args[i]);
+  }
+  const auto result = eg::MergeEnvironmentalGribs(request);
+  PrintJson(eg::EnvironmentalMergeResultJson(result));
+  return result.success ? 0 : 1;
+}
+
 void Usage() {
   std::cerr
       << "Environmental GRIB Generator C++\n"
@@ -905,7 +927,9 @@ void Usage() {
          "[--mode MODE]\n"
       << "  prepare-tpxo-cache [options]\n"
       << "  normalize-grib INPUT OUTPUT\n"
-      << "  merge-gribs --input LABEL=FILE... --output FILE [--overwrite]\n";
+      << "  merge-gribs --input LABEL=FILE... --output FILE [--overwrite]\n"
+      << "  merge-environment-gribs [--weather FILE] [--current FILE] "
+         "[--waves FILE] --output FILE [--overwrite]\n";
 }
 
 }  // namespace
@@ -937,6 +961,7 @@ int main(int argc, char** argv) {
     if (args[0] == "inspect-grib") return Inspect(args);
     if (args[0] == "normalize-grib") return Normalize(args);
     if (args[0] == "merge-gribs") return Merge(args);
+    if (args[0] == "merge-environment-gribs") return MergeEnvironment(args);
     Usage();
     throw eg::ValidationError("unknown command: " + args[0]);
   } catch (const std::exception& error) {
