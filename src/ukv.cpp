@@ -10,6 +10,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <locale>
 #include <map>
 #include <numbers>
 #include <sstream>
@@ -163,11 +164,15 @@ class Projection {
       throw ValidationError("PROJ could not create a UKV projection context");
     }
     std::ostringstream destination;
+    destination.imbue(std::locale::classic());
     destination << "+proj=laea +lat_0=" << field.lat0 << " +lon_0=" << field.lon0
                 << " +x_0=" << field.false_easting << " +y_0=" << field.false_northing
                 << " +a=" << field.semi_major << " +b=" << field.semi_minor
                 << " +units=m +no_defs +type=crs";
-    PJ* raw = proj_create_crs_to_crs(context_, "EPSG:4326", destination.str().c_str(), nullptr);
+    constexpr const char* source =
+        "+proj=longlat +ellps=WGS84 +no_defs +type=crs";
+    PJ* raw = proj_create_crs_to_crs(context_, source,
+                                     destination.str().c_str(), nullptr);
     projection_ = raw ? proj_normalize_for_visualization(context_, raw) : nullptr;
     if (raw) proj_destroy(raw);
     if (!projection_) {
