@@ -3,17 +3,39 @@ project(environmental_grib_generator VERSION 0.1.2 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
-find_package(PkgConfig REQUIRED)
 find_package(BZip2 REQUIRED)
-pkg_check_modules(ECCODES REQUIRED IMPORTED_TARGET eccodes)
-pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
-pkg_check_modules(NETCDF REQUIRED IMPORTED_TARGET netcdf)
-pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
-pkg_check_modules(QHULL_R REQUIRED IMPORTED_TARGET qhull_r)
-pkg_check_modules(BLOSC REQUIRED IMPORTED_TARGET blosc)
-pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
-pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
-pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+if(WIN32)
+  # vcpkg's exported CMake targets carry proper MSVC link paths.  Passing its
+  # pkg-config -L flags through pkgconfiglite instead makes Visual Studio treat
+  # the terminal "lib" directory as an object named lib.obj.
+  find_package(eccodes CONFIG REQUIRED)
+  find_package(jsoncpp CONFIG REQUIRED)
+  find_package(netCDF CONFIG REQUIRED)
+  find_package(CURL REQUIRED)
+  find_package(Qhull CONFIG REQUIRED)
+  find_package(blosc CONFIG REQUIRED)
+  find_package(libzip CONFIG REQUIRED)
+  find_package(unofficial-sodium CONFIG REQUIRED)
+  find_package(zstd CONFIG REQUIRED)
+  set(ENVIRONMENTAL_GRIB_DEPENDENCIES
+    eccodes JsonCpp::JsonCpp netCDF::netcdf CURL::libcurl Qhull::qhull_r
+    blosc_shared libzip::zip unofficial-sodium::sodium zstd::libzstd)
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(ECCODES REQUIRED IMPORTED_TARGET eccodes)
+  pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
+  pkg_check_modules(NETCDF REQUIRED IMPORTED_TARGET netcdf)
+  pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+  pkg_check_modules(QHULL_R REQUIRED IMPORTED_TARGET qhull_r)
+  pkg_check_modules(BLOSC REQUIRED IMPORTED_TARGET blosc)
+  pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
+  pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
+  pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+  set(ENVIRONMENTAL_GRIB_DEPENDENCIES
+    PkgConfig::ECCODES PkgConfig::JSONCPP PkgConfig::NETCDF PkgConfig::CURL
+    PkgConfig::QHULL_R PkgConfig::BLOSC PkgConfig::LIBZIP PkgConfig::SODIUM
+    PkgConfig::ZSTD)
+endif()
 find_path(PROJ_INCLUDE_DIR proj.h HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES include)
 find_library(PROJ_LIBRARY NAMES proj HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES lib)
 
@@ -47,9 +69,7 @@ target_include_directories(environmental_grib_engine
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(environmental_grib_engine
-  PUBLIC PkgConfig::ECCODES PkgConfig::JSONCPP PkgConfig::NETCDF PkgConfig::CURL
-         PkgConfig::QHULL_R BZip2::BZip2
-         PkgConfig::BLOSC PkgConfig::LIBZIP PkgConfig::SODIUM PkgConfig::ZSTD
+  PUBLIC ${ENVIRONMENTAL_GRIB_DEPENDENCIES} BZip2::BZip2
 )
 if(MSVC)
   target_compile_definitions(environmental_grib_engine PUBLIC NOMINMAX)
