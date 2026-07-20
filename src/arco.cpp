@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/weather.h"
 
 namespace environmental_grib {
@@ -130,10 +131,12 @@ std::vector<unsigned char> Decompress(const std::vector<unsigned char>& input) {
 template <typename T>
 T Little(const unsigned char* data) {
   T value; std::memcpy(&value, data, sizeof(T));
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-  if constexpr (sizeof(T) == 2) value = std::bit_cast<T>(__builtin_bswap16(std::bit_cast<std::uint16_t>(value)));
-  if constexpr (sizeof(T) == 4) value = std::bit_cast<T>(__builtin_bswap32(std::bit_cast<std::uint32_t>(value)));
-#endif
+  if constexpr (std::endian::native == std::endian::big) {
+    if constexpr (sizeof(T) == 2)
+      value = std::bit_cast<T>(ByteSwap16(std::bit_cast<std::uint16_t>(value)));
+    if constexpr (sizeof(T) == 4)
+      value = std::bit_cast<T>(ByteSwap32(std::bit_cast<std::uint32_t>(value)));
+  }
   return value;
 }
 

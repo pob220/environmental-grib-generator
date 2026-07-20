@@ -36,7 +36,8 @@ void Nc(int status, const std::string& action) {
 class NcFile {
 public:
   explicit NcFile(const std::filesystem::path& path) {
-    Nc(nc_open(path.c_str(), NC_NOWRITE, &id_), "opening UKV NetCDF");
+    const auto utf8_path = PathToUtf8(path);
+    Nc(nc_open(utf8_path.c_str(), NC_NOWRITE, &id_), "opening UKV NetCDF");
   }
   ~NcFile() {
     if (id_ >= 0) nc_close(id_);
@@ -308,7 +309,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
   if (request.grid_spacing_deg <= 0.0)
     throw ValidationError("UKV grid spacing must be positive");
   if (std::filesystem::exists(request.output) && !request.overwrite)
-    throw ValidationError("output already exists: " + request.output.string());
+    throw ValidationError("output already exists: " + PathToUtf8(request.output));
   const auto hours = UkvForecastHours(request.hours, request.step_hours);
   const TimePoint current =
       now.value_or(std::chrono::time_point_cast<std::chrono::seconds>(

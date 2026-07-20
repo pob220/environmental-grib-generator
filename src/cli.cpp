@@ -17,6 +17,7 @@
 #include "environmental_grib/grib.h"
 #include "environmental_grib/job.h"
 #include "environmental_grib/netcdf.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/providers.h"
 #include "environmental_grib/remote_currents.h"
 #include "environmental_grib/rtofs.h"
@@ -37,6 +38,12 @@ std::string RequireValue(const std::vector<std::string>& args,
   if (++index >= args.size())
     throw eg::ValidationError(option + " requires a value");
   return args[index];
+}
+
+std::filesystem::path RequirePath(const std::vector<std::string>& args,
+                                  std::size_t& index,
+                                  const std::string& option) {
+  return eg::PathFromUtf8(RequireValue(args, index, option));
 }
 
 double ParseDouble(const std::string& value, const std::string& option) {
@@ -70,7 +77,7 @@ void PrintJson(const Json::Value& value) {
 Json::Value ReadJsonFile(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
-    throw eg::ValidationError("cannot open job file: " + path.string());
+    throw eg::ValidationError("cannot open job file: " + eg::PathToUtf8(path));
   Json::CharReaderBuilder builder;
   Json::Value value;
   std::string errors;
@@ -174,7 +181,7 @@ int GenerateWeather(const std::vector<std::string>& args) {
     else if (arg == "--weather-grid-spacing-deg" || arg == "--grid-spacing-deg")
       grid_spacing = ParseDouble(RequireValue(args, i, arg), arg);
     else if (arg == "--output")
-      request.output = RequireValue(args, i, arg);
+      request.output = RequirePath(args, i, arg);
     else if (arg == "--overwrite")
       request.overwrite = true;
     else if (arg == "--dry-run")
@@ -224,7 +231,7 @@ int GenerateWeather(const std::vector<std::string>& args) {
         password, request.output, grid_spacing, request.overwrite);
     Json::Value json(Json::objectValue);
     json["provider"] = provider;
-    json["output"] = result.output.string();
+    json["output"] = eg::PathToUtf8(result.output);
     json["message_count"] = Json::UInt64(result.message_count);
     json["byte_count"] = Json::UInt64(result.byte_count);
     json["inspection"] = result.inspection;
@@ -244,7 +251,7 @@ int GenerateProvider(const std::vector<std::string>& args) {
     if (args[i] == "--provider")
       provider = RequireValue(args, i, args[i]);
     else if (args[i] == "--output")
-      output = RequireValue(args, i, args[i]);
+      output = RequirePath(args, i, args[i]);
     else if (args[i] == "--overwrite")
       overwrite = true;
     else if (args[i] == "--dry-run")
@@ -263,7 +270,7 @@ int GenerateProvider(const std::vector<std::string>& args) {
   if (dry_run) {
     Json::Value result;
     result["provider"] = provider;
-    result["output"] = output.string();
+    result["output"] = eg::PathToUtf8(output);
     result["dry_run"] = true;
     PrintJson(result);
     return 0;
@@ -301,7 +308,7 @@ int GenerateCopernicus(const std::vector<std::string>& args) {
     else if (arg == "--password-env")
       password_environment = RequireValue(args, i, arg);
     else if (arg == "--output")
-      request.output = RequireValue(args, i, arg);
+      request.output = RequirePath(args, i, arg);
     else if (arg == "--overwrite")
       request.overwrite = true;
     else if (arg == "--dry-run")
@@ -351,11 +358,11 @@ int GenerateRtofs(const std::vector<std::string>& args) {
     else if (arg == "--date")
       request.date = RequireValue(args, i, arg);
     else if (arg == "--download-directory")
-      request.download_directory = RequireValue(args, i, arg);
+      request.download_directory = RequirePath(args, i, arg);
     else if (arg == "--grid-spacing-deg")
       request.grid_spacing_deg = ParseDouble(RequireValue(args, i, arg), arg);
     else if (arg == "--output")
-      request.output = RequireValue(args, i, arg);
+      request.output = RequirePath(args, i, arg);
     else if (arg == "--overwrite")
       request.overwrite = true;
     else if (arg == "--dry-run")
@@ -402,7 +409,7 @@ int GenerateEnvironment(const std::vector<std::string>& args) {
     else if (arg == "--weather-preset")
       request.weather_preset = RequireValue(args, i, arg);
     else if (arg == "--weather-file")
-      request.weather_file = RequireValue(args, i, arg);
+      request.weather_file = RequirePath(args, i, arg);
     else if (arg == "--include-waves")
       request.include_waves = true;
     else if (arg == "--wave-provider")
@@ -412,17 +419,17 @@ int GenerateEnvironment(const std::vector<std::string>& args) {
     else if (arg == "--current-source")
       request.current_source = RequireValue(args, i, arg);
     else if (arg == "--current-file")
-      request.current_file = RequireValue(args, i, arg);
+      request.current_file = RequirePath(args, i, arg);
     else if (arg == "--input-netcdf")
-      request.input_netcdf = RequireValue(args, i, arg);
+      request.input_netcdf = RequirePath(args, i, arg);
     else if (arg == "--input-cache")
-      request.input_cache = RequireValue(args, i, arg);
+      request.input_cache = RequirePath(args, i, arg);
     else if (arg == "--offline-tidal-file")
-      request.offline_tidal_file = RequireValue(args, i, arg);
+      request.offline_tidal_file = RequirePath(args, i, arg);
     else if (arg == "--offline-current-mode")
       request.offline_current_mode = RequireValue(args, i, arg);
     else if (arg == "--model-dir" || arg == "--model-directory")
-      request.tpxo_model_directory = RequireValue(args, i, arg);
+      request.tpxo_model_directory = RequirePath(args, i, arg);
     else if (arg == "--no-infer-minor")
       request.infer_minor_tides = false;
     else if (arg == "--username")
@@ -432,12 +439,12 @@ int GenerateEnvironment(const std::vector<std::string>& args) {
       if (const char* password = std::getenv(name.c_str()))
         request.copernicus_password = password;
     } else if (arg == "--download-directory")
-      request.download_directory = RequireValue(args, i, arg);
+      request.download_directory = RequirePath(args, i, arg);
     else if (arg == "--grid-spacing-deg")
       request.current_grid_spacing_deg =
           ParseDouble(RequireValue(args, i, arg), arg);
     else if (arg == "--output")
-      request.output = RequireValue(args, i, arg);
+      request.output = RequirePath(args, i, arg);
     else if (arg == "--overwrite")
       request.overwrite = true;
     else if (arg == "--keep-intermediate")
@@ -472,9 +479,9 @@ int RunJob(const std::vector<std::string>& args) {
   std::filesystem::path result_path;
   for (std::size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--job")
-      job_path = RequireValue(args, i, args[i]);
+      job_path = RequirePath(args, i, args[i]);
     else if (args[i] == "--result")
-      result_path = RequireValue(args, i, args[i]);
+      result_path = RequirePath(args, i, args[i]);
     else
       throw eg::ValidationError("unknown run-job option: " + args[i]);
   }
@@ -535,7 +542,7 @@ int Capabilities() {
 int Inspect(const std::vector<std::string>& args) {
   if (args.size() != 2)
     throw eg::ValidationError("usage: environmental-grib inspect-grib FILE");
-  PrintJson(eg::InspectGrib(args[1]));
+  PrintJson(eg::InspectGrib(eg::PathFromUtf8(args[1])));
   return 0;
 }
 
@@ -543,7 +550,8 @@ int Normalize(const std::vector<std::string>& args) {
   if (args.size() != 3)
     throw eg::ValidationError(
         "usage: environmental-grib normalize-grib INPUT OUTPUT");
-  const auto result = eg::NormalizeGribStream(args[1], args[2]);
+  const auto result = eg::NormalizeGribStream(
+      eg::PathFromUtf8(args[1]), eg::PathFromUtf8(args[2]));
   Json::Value json(Json::objectValue);
   json["message_count"] = Json::UInt64(result.message_count);
   json["raw_byte_count"] = Json::UInt64(result.raw_byte_count);
@@ -586,11 +594,11 @@ int Generate(const std::vector<std::string>& args) {
     else if (arg == "--source")
       source = RequireValue(args, i, arg);
     else if (arg == "--input-netcdf")
-      input_netcdf = RequireValue(args, i, arg);
+      input_netcdf = RequirePath(args, i, arg);
     else if (arg == "--input-cache")
-      input_cache = RequireValue(args, i, arg);
+      input_cache = RequirePath(args, i, arg);
     else if (arg == "--model-dir" || arg == "--model-directory")
-      model_directory = RequireValue(args, i, arg);
+      model_directory = RequirePath(args, i, arg);
     else if (arg == "--no-infer-minor")
       infer_minor = false;
     else if (arg == "--overwrite")
@@ -628,7 +636,7 @@ int Generate(const std::vector<std::string>& args) {
     else if (arg == "--units")
       units = RequireValue(args, i, arg);
     else if (arg == "--output")
-      output = RequireValue(args, i, arg);
+      output = RequirePath(args, i, arg);
     else if (arg == "--json" || arg == "--metadata-summary") {
     } else
       throw eg::ValidationError("unknown generate option: " + arg);
@@ -643,7 +651,7 @@ int Generate(const std::vector<std::string>& args) {
         infer_minor, overwrite);
     Json::Value result(Json::objectValue);
     result["source"] = source;
-    result["output"] = generated.output.string();
+    result["output"] = eg::PathToUtf8(generated.output);
     result["message_count"] = Json::UInt64(generated.message_count);
     result["byte_count"] = Json::UInt64(generated.byte_count);
     result["inspection"] = generated.inspection;
@@ -664,7 +672,7 @@ int Generate(const std::vector<std::string>& args) {
     const auto generated = eg::GenerateFromTpxo10AtlasModel(request);
     Json::Value result(Json::objectValue);
     result["source"] = source;
-    result["output"] = generated.output.string();
+    result["output"] = eg::PathToUtf8(generated.output);
     result["message_count"] = Json::UInt64(generated.message_count);
     result["byte_count"] = Json::UInt64(generated.byte_count);
     result["inspection"] = generated.inspection;
@@ -704,7 +712,7 @@ int Generate(const std::vector<std::string>& args) {
   const auto inspected = eg::InspectGrib(output);
   Json::Value result(Json::objectValue);
   result["source"] = source;
-  result["output"] = output.string();
+  result["output"] = eg::PathToUtf8(output);
   result["message_count"] = Json::UInt64(written.message_count);
   result["grid_size"]["nx"] = Json::UInt64(grid.nx());
   result["grid_size"]["ny"] = Json::UInt64(grid.ny());
@@ -721,7 +729,7 @@ int InspectTpxo(const std::vector<std::string>& args) {
   if (args.size() != 2)
     throw eg::ValidationError(
         "usage: environmental-grib inspect-tpxo-cache FILE");
-  PrintJson(eg::InspectTpxoCache(args[1]));
+  PrintJson(eg::InspectTpxoCache(eg::PathFromUtf8(args[1])));
   return 0;
 }
 
@@ -729,7 +737,7 @@ int InspectXtdPackage(const std::vector<std::string>& args) {
   if (args.size() != 2) {
     throw eg::ValidationError("usage: environmental-grib inspect-xtd FILE");
   }
-  PrintJson(eg::InspectXtdPackage(args[1]));
+  PrintJson(eg::InspectXtdPackage(eg::PathFromUtf8(args[1])));
   return 0;
 }
 
@@ -737,7 +745,7 @@ int VerifyXtdPackage(const std::vector<std::string>& args) {
   if (args.size() != 2) {
     throw eg::ValidationError("usage: environmental-grib verify-xtd FILE");
   }
-  PrintJson(eg::VerifyXtdPackage(args[1]));
+  PrintJson(eg::VerifyXtdPackage(eg::PathFromUtf8(args[1])));
   return 0;
 }
 
@@ -747,7 +755,7 @@ int SampleXtdPackage(const std::vector<std::string>& args) {
         "usage: environmental-grib sample-xtd FILE --latitude LAT "
         "--longitude LON --time UTC [--mode MODE]");
   }
-  const std::filesystem::path path = args[1];
+  const std::filesystem::path path = eg::PathFromUtf8(args[1]);
   std::optional<double> latitude;
   std::optional<double> longitude;
   std::optional<eg::TimePoint> time;
@@ -783,7 +791,7 @@ int SampleXtdPackage(const std::vector<std::string>& args) {
                      std::isfinite(field.u_mps.front()) &&
                      std::isfinite(field.v_mps.front());
   Json::Value result(Json::objectValue);
-  result["package"] = path.string();
+  result["package"] = eg::PathToUtf8(path);
   result["package_id"] = reader.status().package_id;
   result["format_version"] = reader.status().format_version;
   result["mode"] = eg::OfflineCurrentModeId(selected_mode);
@@ -836,9 +844,9 @@ int PrepareTpxo(const std::vector<std::string>& args) {
     } else if (arg == "--grid-spacing-deg")
       spacing = ParseDouble(RequireValue(args, i, arg), arg);
     else if (arg == "--model-dir" || arg == "--model-directory")
-      model_directory = RequireValue(args, i, arg);
+      model_directory = RequirePath(args, i, arg);
     else if (arg == "--output")
-      output = RequireValue(args, i, arg);
+      output = RequirePath(args, i, arg);
     else if (arg == "--overwrite")
       overwrite = true;
     else if (arg == "--json" || arg == "--verbose") {
@@ -864,9 +872,10 @@ int Merge(const std::vector<std::string>& args) {
       if (equals == std::string::npos || equals == 0 ||
           equals + 1 == value.size())
         throw eg::ValidationError("--input must be LABEL=PATH");
-      inputs.emplace_back(value.substr(0, equals), value.substr(equals + 1));
+      inputs.emplace_back(value.substr(0, equals),
+                          eg::PathFromUtf8(value.substr(equals + 1)));
     } else if (args[i] == "--output")
-      output = RequireValue(args, i, args[i]);
+      output = RequirePath(args, i, args[i]);
     else if (args[i] == "--overwrite")
       overwrite = true;
     else
@@ -876,7 +885,7 @@ int Merge(const std::vector<std::string>& args) {
     throw eg::ValidationError("merge-gribs requires --output");
   const auto merged = eg::MergeGribStreams(inputs, output, overwrite);
   Json::Value result(Json::objectValue);
-  result["output"] = output.string();
+  result["output"] = eg::PathToUtf8(output);
   result["output_message_count"] = Json::UInt64(merged.output_message_count);
   result["byte_count"] = Json::UInt64(merged.byte_count);
   for (const auto& [label, count] : merged.input_message_counts)
@@ -890,13 +899,13 @@ int MergeEnvironment(const std::vector<std::string>& args) {
   eg::EnvironmentalMergeRequest request;
   for (std::size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--weather")
-      request.weather = RequireValue(args, i, args[i]);
+      request.weather = RequirePath(args, i, args[i]);
     else if (args[i] == "--current")
-      request.current = RequireValue(args, i, args[i]);
+      request.current = RequirePath(args, i, args[i]);
     else if (args[i] == "--waves")
-      request.waves = RequireValue(args, i, args[i]);
+      request.waves = RequirePath(args, i, args[i]);
     else if (args[i] == "--output")
-      request.output = RequireValue(args, i, args[i]);
+      request.output = RequirePath(args, i, args[i]);
     else if (args[i] == "--overwrite")
       request.overwrite = true;
     else
@@ -934,14 +943,24 @@ void Usage() {
 
 }  // namespace
 
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
   try {
     if (argc < 2) {
       Usage();
       return 2;
     }
     std::vector<std::string> args;
-    for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+    for (int i = 1; i < argc; ++i) {
+#ifdef _WIN32
+      args.emplace_back(eg::PathToUtf8(std::filesystem::path(argv[i])));
+#else
+      args.emplace_back(argv[i]);
+#endif
+    }
     if (args[0] == "providers") return Providers();
     if (args[0] == "weather-providers") return WeatherProviders();
     if (args[0] == "generate") return Generate(args);

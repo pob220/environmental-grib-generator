@@ -20,12 +20,33 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/platform.h"
 
 namespace environmental_grib {
 namespace {
 
 constexpr double kPi = std::numbers::pi_v<double>;
 constexpr double kMjdTideEpoch = 48622.0;
+
+zip_t* OpenZipArchive(const std::filesystem::path& path, int flags) {
+#ifdef _WIN32
+  zip_error_t error;
+  zip_error_init(&error);
+  zip_source_t* source =
+      zip_source_win32w_create(path.c_str(), 0, -1, &error);
+  if (!source) {
+    zip_error_fini(&error);
+    return nullptr;
+  }
+  zip_t* archive = zip_open_from_source(source, flags, &error);
+  if (!archive) zip_source_free(source);
+  zip_error_fini(&error);
+  return archive;
+#else
+  int error = 0;
+  return zip_open(path.c_str(), flags, &error);
+#endif
+}
 
 struct NpyArray {
   std::string descriptor;
@@ -543,9 +564,8 @@ std::vector<double> PredictAtlasHarmonicGrid(
 }
 
 TpxoCache LoadTpxoCache(const std::filesystem::path& path) {
-  int error=0;
-  zip_t* archive=zip_open(path.c_str(),ZIP_RDONLY,&error);
-  if (!archive) throw ValidationError("could not read TPXO cache file " + path.string());
+  zip_t* archive=OpenZipArchive(path,ZIP_RDONLY);
+  if (!archive) throw ValidationError("could not read TPXO cache file " + PathToUtf8(path));
   try {
     const auto metadata_values=ReadUnicode(ReadNpy(archive,"metadata_json"),"metadata_json");
     if (metadata_values.size()!=1) throw ValidationError("TPXO cache metadata must be scalar");
@@ -592,10 +612,10 @@ void WriteTpxoCache(const std::filesystem::path& path,const TpxoCache& cache,
   if(cache.u_cm_s.size()!=cache.constituents.size()*cache.grid.size() || cache.v_cm_s.size()!=cache.u_cm_s.size())
     throw ValidationError("TPXO cache harmonic dimensions are inconsistent");
   std::filesystem::create_directories(path.parent_path().empty()?std::filesystem::current_path():path.parent_path());
-  const auto temporary=path.string()+".tmp";
+  auto temporary=path; temporary += ".tmp";
   std::error_code ignored; std::filesystem::remove(temporary,ignored);
-  int error=0; zip_t* archive=zip_open(temporary.c_str(),ZIP_CREATE|ZIP_TRUNCATE,&error);
-  if(!archive) throw ValidationError("could not create TPXO cache "+temporary);
+  zip_t* archive=OpenZipArchive(temporary,ZIP_CREATE|ZIP_TRUNCATE);
+  if(!archive) throw ValidationError("could not create TPXO cache "+PathToUtf8(temporary));
   try {
     Json::StreamWriterBuilder builder; builder["indentation"]="";
     const std::string metadata=Json::writeString(builder,cache.metadata);
@@ -610,7 +630,7 @@ void WriteTpxoCache(const std::filesystem::path& path,const TpxoCache& cache,
     const std::vector<std::size_t> harmonic_shape{cache.constituents.size(),cache.grid.size()};
     AddZipMember(archive,"u_complex.npy",NpyBytes("<c16",harmonic_shape,cache.u_cm_s.data(),cache.u_cm_s.size()*sizeof(std::complex<double>)));
     AddZipMember(archive,"v_complex.npy",NpyBytes("<c16",harmonic_shape,cache.v_cm_s.data(),cache.v_cm_s.size()*sizeof(std::complex<double>)));
-    if(zip_close(archive)!=0) { archive=nullptr; throw ValidationError("could not finalize TPXO cache "+temporary); }
+    if(zip_close(archive)!=0) { archive=nullptr; throw ValidationError("could not finalize TPXO cache "+PathToUtf8(temporary)); }
     archive=nullptr; std::filesystem::rename(temporary,path);
   } catch (...) {
     if (archive) zip_discard(archive);
@@ -621,7 +641,7 @@ void WriteTpxoCache(const std::filesystem::path& path,const TpxoCache& cache,
 
 Json::Value InspectTpxoCache(const std::filesystem::path& path) {
   const auto cache=LoadTpxoCache(path);
-  Json::Value value=cache.metadata; value["input_cache"]=path.string();
+  Json::Value value=cache.metadata; value["input_cache"]=PathToUtf8(path);
   value["grid_size"]["nx"]=Json::UInt64(cache.grid.nx());
   value["grid_size"]["ny"]=Json::UInt64(cache.grid.ny());
   value["point_count"]=Json::UInt64(cache.grid.size()); value["valid"]=true;

@@ -3,6 +3,7 @@
 #include <fstream>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/platform.h"
 
 namespace environmental_grib {
 namespace {
@@ -50,7 +51,7 @@ bool Boolean(const Json::Value& object, const char* name, bool fallback) {
 void OptionalPath(const Json::Value& object, const char* name,
                   std::optional<std::filesystem::path>* target) {
   const auto value = String(object, name);
-  if (!value.empty()) *target = value;
+  if (!value.empty()) *target = PathFromUtf8(value);
 }
 
 Json::Value StringArray(std::initializer_list<const char*> values) {
@@ -117,13 +118,14 @@ GeneratorJob ParseGeneratorJob(const Json::Value& value) {
                &job.request.tpxo_model_directory);
   job.request.auto_prepare_tpxo_cache =
       Boolean(request, "autoPrepareTpxoCache", false);
-  job.request.download_directory = String(request, "downloadDirectory");
+  job.request.download_directory =
+      PathFromUtf8(String(request, "downloadDirectory"));
   job.request.copernicus_username = String(request, "copernicusUsername");
   job.request.current_grid_spacing_deg =
       Number(request, "currentGridSpacingDeg", 0.05);
   job.request.infer_minor_tides =
       Boolean(request, "inferMinorTides", true);
-  job.request.output = String(request, "output");
+  job.request.output = PathFromUtf8(String(request, "output"));
   job.request.overwrite = Boolean(request, "overwrite", false);
   job.request.keep_intermediate =
       Boolean(request, "keepIntermediate", false);
@@ -184,14 +186,19 @@ void WriteJsonFileAtomic(const std::filesystem::path& path,
   if (!path.parent_path().empty()) {
     std::filesystem::create_directories(path.parent_path());
   }
-  const auto temporary = path.string() + ".tmp";
+  auto temporary = path;
+  temporary += ".tmp";
   Json::StreamWriterBuilder builder;
   builder["indentation"] = "  ";
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    if (!output) throw ValidationError("cannot open result file: " + temporary);
+    if (!output)
+      throw ValidationError("cannot open result file: " +
+                            PathToUtf8(temporary));
     output << Json::writeString(builder, value) << '\n';
-    if (!output) throw ValidationError("cannot write result file: " + temporary);
+    if (!output)
+      throw ValidationError("cannot write result file: " +
+                            PathToUtf8(temporary));
   }
   std::error_code ignored;
   std::filesystem::remove(path, ignored);

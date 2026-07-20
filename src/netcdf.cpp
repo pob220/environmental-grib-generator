@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/platform.h"
 
 namespace environmental_grib {
 namespace {
@@ -34,7 +35,9 @@ void NcCheck(int status, const std::string& action) {
 class NcFile {
  public:
   explicit NcFile(const std::filesystem::path& path) {
-    NcCheck(nc_open(path.c_str(), NC_NOWRITE, &id_), "opening NetCDF " + path.string());
+    const auto utf8_path = PathToUtf8(path);
+    NcCheck(nc_open(utf8_path.c_str(), NC_NOWRITE, &id_),
+            "opening NetCDF " + utf8_path);
   }
   ~NcFile() { if (id_ >= 0) nc_close(id_); }
   NcFile(const NcFile&) = delete;
@@ -358,7 +361,8 @@ std::pair<double, bool> Interpolate(const Field2D& field, double latitude,
 NetCDFCurrentSource::NetCDFCurrentSource(std::filesystem::path path,
                                          NetCDFOptions options)
     : path_(std::move(path)), options_(std::move(options)) {
-  if (!std::filesystem::is_regular_file(path_)) throw ValidationError("NetCDF file does not exist: " + path_.string());
+  if (!std::filesystem::is_regular_file(path_))
+    throw ValidationError("NetCDF file does not exist: " + PathToUtf8(path_));
 }
 
 BoundingBox NetCDFCurrentSource::SourceBounds() const {
@@ -441,7 +445,7 @@ Json::Value InspectNetCDF(const std::filesystem::path& path) {
   NcFile file(path);
   NetCDFOptions options;
   Json::Value result(Json::objectValue);
-  result["path"] = path.string();
+  result["path"] = PathToUtf8(path);
   int dimensions = 0, variables = 0;
   NcCheck(nc_inq(file.id(), &dimensions, &variables, nullptr, nullptr), "inspecting NetCDF");
   for (int id = 0; id < dimensions; ++id) result["dimensions"][DimName(file.id(), id)] = Json::UInt64(DimSize(file.id(), id));

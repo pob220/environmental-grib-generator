@@ -29,7 +29,7 @@ DirectCurrentResult DownloadMarineIe(const std::filesystem::path& output,
     throw ValidationError("output must be a file path, not a directory");
   }
   if (std::filesystem::exists(output) && !overwrite) {
-    throw ValidationError("output already exists: " + output.string() +
+    throw ValidationError("output already exists: " + PathToUtf8(output) +
                           "; enable overwrite to replace it");
   }
   if (!download) download = CurlHttpGet;
@@ -73,7 +73,7 @@ DirectCurrentResult DownloadMarineIe(const std::filesystem::path& output,
 Json::Value DirectCurrentResultJson(const DirectCurrentResult& result) {
   Json::Value value(Json::objectValue);
   value["provider"] = result.provider;
-  value["output"] = result.output.string();
+  value["output"] = PathToUtf8(result.output);
   value["raw_byte_count"] = Json::UInt64(result.raw_byte_count);
   value["clean_byte_count"] = Json::UInt64(result.clean_byte_count);
   value["skipped_byte_count"] = Json::UInt64(result.skipped_byte_count);

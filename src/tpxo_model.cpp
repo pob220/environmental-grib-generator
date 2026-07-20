@@ -16,6 +16,7 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/platform.h"
 
 namespace environmental_grib {
 namespace {
@@ -27,13 +28,15 @@ void NcCheck(int status, const std::string& context) {
 class NcFile {
  public:
   explicit NcFile(const std::filesystem::path& path) : path_(path) {
-    NcCheck(nc_open(path.c_str(), NC_NOWRITE, &id_), "could not open " + path.string());
+    const auto utf8_path = PathToUtf8(path);
+    NcCheck(nc_open(utf8_path.c_str(), NC_NOWRITE, &id_),
+            "could not open " + utf8_path);
   }
   ~NcFile() { if (id_ >= 0) nc_close(id_); }
   NcFile(const NcFile&) = delete;
   NcFile& operator=(const NcFile&) = delete;
   int Var(const std::string& name) const {
-    int id=-1; NcCheck(nc_inq_varid(id_,name.c_str(),&id),"missing variable " + name + " in " + path_.string()); return id;
+    int id=-1; NcCheck(nc_inq_varid(id_,name.c_str(),&id),"missing variable " + name + " in " + PathToUtf8(path_)); return id;
   }
   std::vector<std::size_t> Shape(int variable) const {
     int ndims=0; NcCheck(nc_inq_varndims(id_,variable,&ndims),"could not inspect NetCDF variable");
@@ -246,11 +249,11 @@ std::complex<double> Bilinear(const RegionalField& source,double lon,double lat)
 std::vector<std::filesystem::path> ModelFiles(const std::filesystem::path& directory) {
   std::vector<std::filesystem::path> files;
   for(const auto& entry:std::filesystem::directory_iterator(directory)) {
-    const auto name=entry.path().filename().string();
+    const auto name=PathToUtf8(entry.path().filename());
     if(entry.is_regular_file() && name.starts_with("u_") && name.ends_with("_tpxo10_atlas_30_v2.nc")) files.push_back(entry.path());
   }
   std::sort(files.begin(),files.end());
-  if(files.empty()) throw ValidationError("no TPXO10 atlas constituent files found in "+directory.string());
+  if(files.empty()) throw ValidationError("no TPXO10 atlas constituent files found in "+PathToUtf8(directory));
   return files;
 }
 
@@ -269,8 +272,8 @@ std::filesystem::path ResolveTpxo10AtlasDirectory(
   } else {
     throw ValidationError(
         "TPXO10 grid file not found; select either the model parent or "
-        "TPXO10_atlas_v2 directory (checked " + direct_grid.string() +
-        " and " + nested_grid.string() + ")");
+        "TPXO10_atlas_v2 directory (checked " + PathToUtf8(direct_grid) +
+        " and " + PathToUtf8(nested_grid) + ")");
   }
   ModelFiles(directory);
   return directory;
@@ -294,9 +297,9 @@ TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
   {
     const auto stat_path=[&](const std::filesystem::path& path) {
       Json::Value record(Json::objectValue);
-      record["name"]=path.filename().string();
+      record["name"]=PathToUtf8(path.filename());
       record["relative_path"]=
-          std::filesystem::relative(path,directory.parent_path()).string();
+          PathToUtf8(std::filesystem::relative(path,directory.parent_path()));
       record["size"]=Json::UInt64(std::filesystem::file_size(path));
       const auto ticks=std::filesystem::last_write_time(path).time_since_epoch().count();
       record["mtime"]=Json::Int64(ticks);
@@ -340,7 +343,7 @@ Json::Value PrepareTpxo10Cache(const std::filesystem::path& model_directory,
   cache.metadata["minor_constituents"]=Json::arrayValue;
   cache.metadata["pyTMD_version"]=Json::nullValue;
   WriteTpxoCache(output,cache,overwrite);
-  auto result=InspectTpxoCache(output); result["cache_file"]=output.string();
+  auto result=InspectTpxoCache(output); result["cache_file"]=PathToUtf8(output);
   return result;
 }
 

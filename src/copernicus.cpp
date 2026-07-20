@@ -4,6 +4,7 @@
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include "environmental_grib/arco.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/model.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/weather.h"
 
 namespace environmental_grib {
@@ -135,9 +137,11 @@ std::vector<std::int16_t> DecodeInt16Blosc(const std::vector<unsigned char>& com
   const int decoded = blosc_decompress(compressed.data(), values.data(), values.size() * sizeof(std::int16_t));
   if (decoded < 0 || static_cast<std::size_t>(decoded) != values.size() * sizeof(std::int16_t))
     throw ValidationError("Copernicus Zarr chunk failed Blosc decompression or had unexpected size");
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-  for (auto& value : values) value = static_cast<std::int16_t>(__builtin_bswap16(static_cast<std::uint16_t>(value)));
-#endif
+  if constexpr (std::endian::native == std::endian::big) {
+    for (auto& value : values)
+      value = static_cast<std::int16_t>(
+          ByteSwap16(static_cast<std::uint16_t>(value)));
+  }
   return values;
 }
 
@@ -195,7 +199,7 @@ CopernicusResult GenerateCopernicusNws(const CopernicusRequest& request,
   if (request.username.empty() || request.password.empty())
     throw ValidationError("Copernicus username and password are required");
   if (std::filesystem::exists(request.output) && !request.overwrite)
-    throw ValidationError("output already exists: " + request.output.string());
+    throw ValidationError("output already exists: " + PathToUtf8(request.output));
   if (!download)
     download = BinaryDownload(MakeRetryingHttpGet(
         {}, "Copernicus NWS current", {}, {5, 1000, 8000}));
@@ -266,7 +270,7 @@ CopernicusResult GenerateCopernicusNws(const CopernicusRequest& request,
 
 Json::Value CopernicusResultJson(const CopernicusResult& result) {
   Json::Value value(Json::objectValue);
-  value["output"] = result.output.string();
+  value["output"] = PathToUtf8(result.output);
   value["message_count"] = Json::UInt64(result.message_count);
   value["byte_count"] = Json::UInt64(result.byte_count);
   value["dataset_id"] = result.dataset_id;
@@ -290,7 +294,7 @@ CopernicusResult GenerateCopernicusArcoCurrent(
   if (request.username.empty() || request.password.empty())
     throw ValidationError("Copernicus username and password are required");
   if (std::filesystem::exists(request.output) && !request.overwrite)
-    throw ValidationError("output already exists: " + request.output.string());
+    throw ValidationError("output already exists: " + PathToUtf8(request.output));
   if (!download)
     download = BinaryDownload(MakeRetryingHttpGet(
         {}, provider_label, {}, {5, 1000, 8000}));

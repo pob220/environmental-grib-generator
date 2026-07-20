@@ -60,10 +60,16 @@ void Nc(int status, const std::string& action) {
     throw std::runtime_error(action + ": " + nc_strerror(status));
 }
 
+void CreateNetCDF(const std::filesystem::path& path, int* file,
+                  const std::string& action) {
+  const auto utf8_path = eg::PathToUtf8(path);
+  Nc(nc_create(utf8_path.c_str(), NC_CLOBBER, file), action);
+}
+
 void WriteNetCDFFixture(const std::filesystem::path& path,
                         const std::string& units) {
   int file = -1;
-  Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create fixture");
+  CreateNetCDF(path, &file, "create fixture");
   int time_dim = -1, lat_dim = -1, lon_dim = -1;
   Nc(nc_def_dim(file, "time", 2, &time_dim), "time dimension");
   Nc(nc_def_dim(file, "latitude", 3, &lat_dim), "latitude dimension");
@@ -111,8 +117,8 @@ void WriteTpxoModelFixture(const std::filesystem::path& root,
   const double depth[] = {100.0, 100.0, 100.0, 100.0, 100.0,
                           100.0, 100.0, 100.0, 100.0};
   int file = -1, x = -1, y = -1;
-  Nc(nc_create((root / "grid_tpxo10atlas_v2.nc").c_str(), NC_CLOBBER, &file),
-     "create TPXO grid fixture");
+  CreateNetCDF(root / "grid_tpxo10atlas_v2.nc", &file,
+               "create TPXO grid fixture");
   Nc(nc_def_dim(file, "nx", 3, &x), "TPXO grid x dimension");
   Nc(nc_def_dim(file, "ny", 3, &y), "TPXO grid y dimension");
   int lon_u = -1, lat_u = -1, lon_v = -1, lat_v = -1, hu = -1, hv = -1;
@@ -139,9 +145,8 @@ void WriteTpxoModelFixture(const std::filesystem::path& root,
   Nc(nc_put_var_double(file, hv, depth), "TPXO hv values");
   Nc(nc_close(file), "close TPXO grid fixture");
 
-  Nc(nc_create((root / "u_m2_tpxo10_atlas_30_v2.nc").c_str(), NC_CLOBBER,
-               &file),
-     "create TPXO transport fixture");
+  CreateNetCDF(root / "u_m2_tpxo10_atlas_30_v2.nc", &file,
+               "create TPXO transport fixture");
   int chars = -1;
   Nc(nc_def_dim(file, "nx", 3, &x), "TPXO transport x dimension");
   Nc(nc_def_dim(file, "ny", 3, &y), "TPXO transport y dimension");
@@ -185,7 +190,7 @@ void WriteTpxoModelFixture(const std::filesystem::path& root,
 
 void WriteWaveFixture(const std::filesystem::path& path) {
   int file = -1;
-  Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create wave fixture");
+  CreateNetCDF(path, &file, "create wave fixture");
   int time_dim = -1, lat_dim = -1, lon_dim = -1;
   Nc(nc_def_dim(file, "time", 2, &time_dim), "wave time dimension");
   Nc(nc_def_dim(file, "latitude", 3, &lat_dim), "wave latitude dimension");
@@ -229,7 +234,7 @@ void WriteWaveFixture(const std::filesystem::path& path) {
 
 void WriteRtofsFixture(const std::filesystem::path& path) {
   int file = -1;
-  Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create RTOFS fixture");
+  CreateNetCDF(path, &file, "create RTOFS fixture");
   int mt = -1, depth = -1, y = -1, x = -1;
   Nc(nc_def_dim(file, "MT", 1, &mt), "RTOFS MT");
   Nc(nc_def_dim(file, "Depth", 1, &depth), "RTOFS depth");
@@ -271,7 +276,7 @@ void WriteUkvFixture(const std::filesystem::path& path,
                      const std::string& standard_name, const std::string& units,
                      double value) {
   int file = -1;
-  Nc(nc_create(path.c_str(), NC_CLOBBER, &file), "create UKV fixture");
+  CreateNetCDF(path, &file, "create UKV fixture");
   int y_dim = -1, x_dim = -1;
   Nc(nc_def_dim(file, "projection_y_coordinate", 5, &y_dim), "UKV y dimension");
   Nc(nc_def_dim(file, "projection_x_coordinate", 5, &x_dim), "UKV x dimension");
@@ -394,7 +399,8 @@ int main() {
   job_request["fallbackCurrentSource"] = "offline-tidal";
   job_request["currentSource"] = "none";
   job_request["autoPrepareTpxoCache"] = true;
-  job_request["output"] = "/tmp/environmental-grib-job-test.grb";
+  job_request["weatherFile"] = "navigation-航海/weather-åäö.grb2";
+  job_request["output"] = "navigation-航海/combined-åäö.grb2";
   job_request["overwrite"] = true;
   job_json["credentials"]["copernicusPasswordEnvironment"] = "TEST_SECRET";
   const auto parsed_job = eg::ParseGeneratorJob(job_json);
@@ -408,6 +414,12 @@ int main() {
             parsed_job.request.overwrite &&
             parsed_job.request.auto_prepare_tpxo_cache,
         "job protocol request mapping");
+  Check(parsed_job.request.weather_file &&
+            eg::PathToUtf8(*parsed_job.request.weather_file) ==
+                "navigation-航海/weather-åäö.grb2" &&
+            eg::PathToUtf8(parsed_job.request.output) ==
+                "navigation-航海/combined-åäö.grb2",
+        "job protocol preserves UTF-8 file paths");
   Check(parsed_job.copernicus_password_environment == "TEST_SECRET",
         "job protocol secret environment mapping");
   const auto capabilities = eg::GeneratorCapabilitiesJson();
@@ -1308,7 +1320,10 @@ int main() {
             recovered_weather[1]["status"].asString() == "complete",
         "selected long-range weather recovers a failed preferred provider");
 
-  const auto netcdf_path = Temp("currents.nc");
+  const auto unicode_directory = Temp("unicode") /
+                                 std::filesystem::path(u8"navigation-航海");
+  std::filesystem::create_directories(unicode_directory);
+  const auto netcdf_path = unicode_directory / u8"currents-åäö.nc";
   WriteNetCDFFixture(netcdf_path, "cm/s");
   eg::NetCDFCurrentSource netcdf(netcdf_path);
   const eg::BoundingBox netcdf_bbox{-7.0, 51.5, -6.0, 52.5};
@@ -1392,6 +1407,10 @@ int main() {
                            coupled_resume_path}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
+  }
+  {
+    std::error_code ignored;
+    std::filesystem::remove_all(Temp("unicode"), ignored);
   }
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
   for (const auto& path :

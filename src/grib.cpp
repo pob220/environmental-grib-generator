@@ -28,15 +28,15 @@ using HandlePtr = std::unique_ptr<codes_handle, decltype(&codes_handle_delete)>;
 
 std::vector<unsigned char> ReadBytes(const std::filesystem::path& path) {
   std::ifstream stream(path, std::ios::binary | std::ios::ate);
-  if (!stream) throw ValidationError("unable to read file: " + path.string());
+  if (!stream) throw ValidationError("unable to read file: " + PathToUtf8(path));
   const auto end = stream.tellg();
   if (end < 0)
-    throw ValidationError("unable to determine file size: " + path.string());
+    throw ValidationError("unable to determine file size: " + PathToUtf8(path));
   std::vector<unsigned char> bytes(static_cast<std::size_t>(end));
   stream.seekg(0);
   if (!bytes.empty() &&
       !stream.read(reinterpret_cast<char*>(bytes.data()), end)) {
-    throw ValidationError("unable to read file: " + path.string());
+    throw ValidationError("unable to read file: " + PathToUtf8(path));
   }
   return bytes;
 }
@@ -182,7 +182,7 @@ std::filesystem::path TemporarySibling(const std::filesystem::path& output) {
     if (!std::filesystem::exists(candidate)) return candidate;
   }
   throw ValidationError("unable to allocate temporary output beside " +
-                        output.string());
+                        PathToUtf8(output));
 }
 
 }  // namespace
@@ -235,14 +235,14 @@ GribNormalizeResult NormalizeGribStream(const std::filesystem::path& input,
   }
   if (count == 0)
     throw ValidationError("no complete GRIB messages found in " +
-                          input.string());
+                          PathToUtf8(input));
   std::filesystem::create_directories(
       output.parent_path().empty() ? "." : output.parent_path());
   std::ofstream stream(output, std::ios::binary | std::ios::trunc);
   if (!stream || !stream.write(reinterpret_cast<const char*>(clean.data()),
                                static_cast<std::streamsize>(clean.size()))) {
     throw ValidationError("unable to write normalized GRIB: " +
-                          output.string());
+                          PathToUtf8(output));
   }
   stream.close();
   ScanGribMessages(output);
@@ -253,7 +253,7 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
   const auto scan = ScanGribMessages(path);
   const auto data = ReadBytes(path);
   Json::Value result(Json::objectValue);
-  result["path"] = path.string();
+  result["path"] = PathToUtf8(path);
   result["message_count"] = Json::UInt64(scan.message_count);
   result["byte_count"] = Json::UInt64(scan.byte_count);
   result["stream_valid"] = true;
@@ -278,9 +278,9 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
   Json::Value coverage(Json::objectValue);
   double coverage_west = 0.0, coverage_south = 0.0, coverage_east = 0.0,
          coverage_north = 0.0;
-  FILE* raw = std::fopen(path.c_str(), "rb");
+  FILE* raw = OpenFileForReading(path);
   if (!raw)
-    throw ValidationError("unable to open GRIB with ecCodes: " + path.string());
+    throw ValidationError("unable to open GRIB with ecCodes: " + PathToUtf8(path));
   struct FileCloser {
     void operator()(FILE* value) const { std::fclose(value); }
   };
@@ -452,7 +452,7 @@ GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
       output.parent_path().empty() ? "." : output.parent_path());
   std::ofstream stream(output, std::ios::binary | std::ios::trunc);
   if (!stream)
-    throw ValidationError("unable to create GRIB output: " + output.string());
+    throw ValidationError("unable to create GRIB output: " + PathToUtf8(output));
   const TimePoint reference =
       std::chrono::floor<std::chrono::hours>(grids.front().time);
   std::size_t count = 0;
@@ -552,7 +552,7 @@ GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
       output.parent_path().empty() ? "." : output.parent_path());
   std::ofstream stream(output, std::ios::binary | std::ios::trunc);
   if (!stream)
-    throw ValidationError("unable to create GRIB2 output: " + output.string());
+    throw ValidationError("unable to create GRIB2 output: " + PathToUtf8(output));
   std::size_t count = 0;
   for (const auto& field : fields) {
     if (field.values.size() != grid.size())
@@ -639,13 +639,13 @@ MergeStreamsResult MergeGribStreams(
   if (std::filesystem::exists(output) && std::filesystem::is_directory(output))
     throw ValidationError("output must be a file path, not a directory");
   if (std::filesystem::exists(output) && !overwrite)
-    throw ValidationError("output already exists: " + output.string() +
+    throw ValidationError("output already exists: " + PathToUtf8(output) +
                           "; use --overwrite to replace it");
   std::map<std::string, std::size_t> counts;
   std::size_t expected = 0;
   for (const auto& [label, path] : inputs) {
     if (!std::filesystem::exists(path))
-      throw ValidationError(label + " GRIB not found: " + path.string());
+      throw ValidationError(label + " GRIB not found: " + PathToUtf8(path));
     const auto scan = ScanGribMessages(path);
     counts[label] = scan.message_count;
     expected += scan.message_count;
@@ -662,7 +662,7 @@ MergeStreamsResult MergeGribStreams(
       std::ifstream source(path, std::ios::binary);
       destination << source.rdbuf();
       if (!source.eof() && source.fail())
-        throw ValidationError("failed reading input GRIB: " + path.string());
+        throw ValidationError("failed reading input GRIB: " + PathToUtf8(path));
       if (!destination) throw ValidationError("failed writing merged GRIB");
     }
     destination.close();
@@ -849,7 +849,7 @@ Json::Value EnvironmentalMergeResultJson(
     const EnvironmentalMergeResult& result) {
   Json::Value value(Json::objectValue);
   value["success"] = result.success;
-  value["output"] = result.output.string();
+  value["output"] = PathToUtf8(result.output);
   value["output_message_count"] = Json::UInt64(result.output_message_count);
   value["byte_count"] = Json::UInt64(result.byte_count);
   for (const auto& [label, count] : result.input_message_counts)
@@ -875,13 +875,13 @@ MergeStreamsResult CompositeGribStreamsPreferFirst(
   if (std::filesystem::exists(output) && std::filesystem::is_directory(output))
     throw ValidationError("output must be a file path, not a directory");
   if (std::filesystem::exists(output) && !overwrite)
-    throw ValidationError("output already exists: " + output.string() +
+    throw ValidationError("output already exists: " + PathToUtf8(output) +
                           "; use --overwrite to replace it");
 
   std::map<std::string, std::size_t> counts;
   for (const auto& [label, path] : inputs) {
     if (!std::filesystem::is_regular_file(path))
-      throw ValidationError(label + " GRIB not found: " + path.string());
+      throw ValidationError(label + " GRIB not found: " + PathToUtf8(path));
     counts[label] = ScanGribMessages(path).message_count;
   }
 
@@ -896,10 +896,10 @@ MergeStreamsResult CompositeGribStreamsPreferFirst(
       throw ValidationError("unable to create composite GRIB temporary file");
 
     for (const auto& [label, path] : inputs) {
-      FILE* raw = std::fopen(path.c_str(), "rb");
+      FILE* raw = OpenFileForReading(path);
       if (!raw)
         throw ValidationError("unable to open " + label +
-                              " GRIB: " + path.string());
+                              " GRIB: " + PathToUtf8(path));
       struct FileCloser {
         void operator()(FILE* value) const { std::fclose(value); }
       };

@@ -64,7 +64,7 @@ std::string FingerprintHash(const std::string& value) {
 Json::Value ReadJson(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
-    throw ValidationError("cannot open resume metadata: " + path.string());
+    throw ValidationError("cannot open resume metadata: " + PathToUtf8(path));
   Json::CharReaderBuilder builder;
   Json::Value value;
   std::string errors;
@@ -75,17 +75,20 @@ Json::Value ReadJson(const std::filesystem::path& path) {
 
 void WriteJsonAtomic(const std::filesystem::path& path,
                      const Json::Value& value) {
-  const auto temporary = path.string() + ".tmp-" + std::to_string(ProcessId());
+  auto temporary = path;
+  temporary += ".tmp-" + std::to_string(ProcessId());
   try {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "  ";
     {
       std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
       if (!output)
-        throw ValidationError("cannot create resume metadata: " + temporary);
+        throw ValidationError("cannot create resume metadata: " +
+                              PathToUtf8(temporary));
       output << Json::writeString(builder, value) << '\n';
       if (!output)
-        throw ValidationError("cannot write resume metadata: " + temporary);
+        throw ValidationError("cannot write resume metadata: " +
+                              PathToUtf8(temporary));
     }
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
@@ -166,8 +169,8 @@ public:
             const std::filesystem::path& source,
             const std::optional<std::string>& selected_cycle = std::nullopt) {
     const auto [data, metadata] = Paths(stage, fingerprint);
-    const auto temporary =
-        data.string() + ".tmp-" + std::to_string(ProcessId());
+    auto temporary = data;
+    temporary += ".tmp-" + std::to_string(ProcessId());
     try {
       const auto scan = ScanGribMessages(source);
       if (scan.message_count == 0) return;
@@ -240,7 +243,8 @@ std::string CommonFingerprint(const EnvironmentRequest& request) {
       << std::setprecision(17) << request.bbox.west << ',' << request.bbox.south
       << ',' << request.bbox.east << ',' << request.bbox.north << '|'
       << FormatUtcDateTime(request.start) << '|' << request.hours << '|'
-      << std::filesystem::absolute(request.output).lexically_normal().string();
+      << PathToUtf8(
+             std::filesystem::absolute(request.output).lexically_normal());
   return value.str();
 }
 
@@ -276,7 +280,7 @@ std::string CurrentFingerprint(const EnvironmentRequest& request,
 std::filesystem::path CopyValidated(const std::filesystem::path& source,
                                     const std::filesystem::path& target) {
   if (!std::filesystem::is_regular_file(source))
-    throw ValidationError("input GRIB not found: " + source.string());
+    throw ValidationError("input GRIB not found: " + PathToUtf8(source));
   ScanGribMessages(source);
   std::filesystem::copy_file(source, target,
                              std::filesystem::copy_options::overwrite_existing);
@@ -1262,14 +1266,15 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
 
 Json::Value EnvironmentResultJson(const EnvironmentResult& result) {
   Json::Value value(Json::objectValue);
-  value["output"] = result.output.string();
+  value["output"] = PathToUtf8(result.output);
   value["message_count"] = Json::UInt64(result.message_count);
   value["byte_count"] = Json::UInt64(result.byte_count);
   value["weather_provider"] = result.weather_provider;
   value["wave_provider"] = result.wave_provider;
   value["current_source"] = result.current_source;
   if (result.selected_cycle) value["selected_cycle"] = *result.selected_cycle;
-  for (const auto& path : result.inputs) value["inputs"].append(path.string());
+  for (const auto& path : result.inputs)
+    value["inputs"].append(PathToUtf8(path));
   value["inspection"] = result.inspection;
   value["diagnostics"] = result.diagnostics;
   return value;

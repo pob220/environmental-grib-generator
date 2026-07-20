@@ -52,6 +52,7 @@ target_link_libraries(environmental_grib_engine
          PkgConfig::BLOSC PkgConfig::LIBZIP PkgConfig::SODIUM PkgConfig::ZSTD
 )
 if(MSVC)
+  target_compile_definitions(environmental_grib_engine PUBLIC NOMINMAX)
   target_compile_options(environmental_grib_engine PRIVATE
     /W4 /wd4324 /wd4458)
 else()

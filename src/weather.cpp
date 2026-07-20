@@ -1194,7 +1194,7 @@ Json::Value WeatherResultJson(const WeatherGenerateResult& result) {
   value["model"] = result.model;
   value["cycle"] = result.cycle.CycleTime();
   value["bbox"] = BboxJson(result.bbox);
-  value["output"] = result.output.string();
+  value["output"] = PathToUtf8(result.output);
   value["byte_count"] = Json::UInt64(result.byte_count);
   value["message_count"] = Json::UInt64(result.message_count);
   for (int hour : result.forecast_hours) value["forecast_hours"].append(hour);

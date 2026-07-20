@@ -15,6 +15,7 @@
 
 #include "environmental_grib/error.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/weather.h"
 
 namespace environmental_grib {
@@ -35,7 +36,9 @@ void Nc(int status, const std::string& action) {
 class NcFile {
  public:
   explicit NcFile(const std::filesystem::path& path) {
-    Nc(nc_open(path.c_str(), NC_NOWRITE, &id_), "opening RTOFS NetCDF");
+    const auto utf8_path = PathToUtf8(path);
+    Nc(nc_open(utf8_path.c_str(), NC_NOWRITE, &id_),
+       "opening RTOFS NetCDF");
   }
   ~NcFile() { if (id_ >= 0) nc_close(id_); }
   int id() const { return id_; }
@@ -301,7 +304,7 @@ RtofsResult GenerateRtofs(const RtofsRequest& request,
                           BinaryDownload binary_download) {
   request.bbox.Validate();
   if (std::filesystem::exists(request.output) && !request.overwrite)
-    throw ValidationError("output already exists: " + request.output.string());
+    throw ValidationError("output already exists: " + PathToUtf8(request.output));
   if (!text_download) text_download = [](const std::string& url, double timeout) {
     const auto bytes = CurlHttpGet(url, timeout);
     return std::string(bytes.begin(), bytes.end());
@@ -357,7 +360,7 @@ RtofsResult GenerateRtofs(const RtofsRequest& request,
 
 Json::Value RtofsResultJson(const RtofsResult& result) {
   Json::Value value(Json::objectValue);
-  value["output"] = result.output.string();
+  value["output"] = PathToUtf8(result.output);
   value["message_count"] = Json::UInt64(result.message_count);
   value["byte_count"] = Json::UInt64(result.byte_count);
   value["selected_cycle"] = result.selected_cycle;
