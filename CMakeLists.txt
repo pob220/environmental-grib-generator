@@ -23,6 +23,17 @@ if(WIN32)
 else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(ECCODES REQUIRED IMPORTED_TARGET eccodes)
+  # Some multiarch distro packages expand the eccodes.pc includedir relative
+  # to the pkgconfig directory (for example /usr/lib/include on Ubuntu arm64).
+  # Resolve and validate the installed public header before exporting the
+  # imported target to the engine and helper builds.
+  find_path(ECCODES_HEADER_DIRECTORY NAMES eccodes.h
+            HINTS ${ECCODES_INCLUDE_DIRS})
+  if(NOT ECCODES_HEADER_DIRECTORY)
+    message(FATAL_ERROR "Could not locate the ecCodes public headers")
+  endif()
+  set_property(TARGET PkgConfig::ECCODES PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+               "${ECCODES_HEADER_DIRECTORY}")
   pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
   pkg_check_modules(NETCDF REQUIRED IMPORTED_TARGET netcdf)
   pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
