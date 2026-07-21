@@ -165,9 +165,17 @@ class VariableReader {
         std::chrono::duration_cast<std::chrono::milliseconds>(instant.time_since_epoch()).count();
     const double raw_time = (milliseconds - time_.minimum) / time_.step;
     const auto time_index = static_cast<long long>(std::llround(raw_time));
+    // Forecast products are commonly published on a coarser UTC cycle than
+    // the user's requested start time (for example, three-hour wave fields
+    // requested at 17:00).  Select the nearest published frame when it is no
+    // farther than half one source interval.  This is bounded sampling, not
+    // extrapolation: requests outside the time axis or beyond that tolerance
+    // remain hard failures.
+    constexpr double kIndexEpsilon = 1e-6;
     if (time_index < 0 || static_cast<std::size_t>(time_index) >= time_.size ||
-        std::abs(raw_time - time_index) > 1e-6)
-      throw ValidationError("requested time is unavailable in ARCO dataset");
+        std::abs(raw_time - time_index) > 0.5 + kIndexEpsilon)
+      throw ValidationError(
+          "requested time is outside the usable ARCO forecast timeline");
     NetCDFScalarField result{instant, variable_, variable_, "",
                              std::vector<double>(grid.size()),
                              std::vector<std::uint8_t>(grid.size())};

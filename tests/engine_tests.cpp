@@ -1059,7 +1059,8 @@ int main() {
   const auto period_chunk = BloscInt16(std::vector<std::int16_t>(9, 800));
   const auto direction_chunk = BloscInt16(std::vector<std::int16_t>(9, 9000));
   const auto remote_waves = eg::GenerateCopernicusGlobalWaves(
-      eg::BoundingBox{-7.0, 51.5, -6.0, 52.5}, start, 0, 3, "test-user",
+      eg::BoundingBox{-7.0, 51.5, -6.0, 52.5},
+      start + std::chrono::hours(1), 0, 3, "test-user",
       "secret", remote_wave_output, 0.5, true,
       [&](const std::string& url, double) {
         if (url.find("product.stac.json") != std::string::npos)
@@ -1077,7 +1078,8 @@ int main() {
   Check(remote_waves.message_count == 3 &&
             eg::InspectGrib(remote_wave_output)["short_name_counts"]["dirpw"]
                     .asUInt64() == 1,
-        "Copernicus Global packed wave ARCO conversion");
+        "Copernicus Global packed wave ARCO conversion accepts a bounded "
+        "off-cycle start");
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
   const auto ukv_pressure = Temp("ukv-pressure.nc");
   const auto ukv_temperature = Temp("ukv-temperature.nc");
