@@ -485,7 +485,7 @@ int main() {
           std::string("existing current source remains available: ") + source);
   }
   Check(has_current_source("offline-tidal"),
-        "Offline Tidal is added to generator capabilities");
+        "Offline current is added to generator capabilities");
   job_json["schemaVersion"] = 1;
   job_request["currentSource"] = "offline-tidal";
   job_request["offlineTidalFile"] = "/tmp/global.xtd";
@@ -640,6 +640,15 @@ int main() {
         "synthetic source deterministic");
 
   eg::ProviderRegistry registry;
+  const auto& offline_current = registry.Get("offline-tidal");
+  Check(offline_current.description.find("TPXO") == std::string::npos &&
+            offline_current.resolution.find("Atlas") == std::string::npos &&
+            offline_current.product_id == "xgrib-global-currents.xtd",
+        "Offline current metadata remains distinct from the TPXO source");
+  const auto& direct_tpxo = registry.Get("tpxo");
+  Check(direct_tpxo.description.find("user-supplied TPXO10 Atlas") !=
+            std::string::npos,
+        "direct TPXO metadata states that the user supplies the Atlas");
   Check(eg::SelectBestProviderForBbox({-6.5, 52.0, -4.5, 55.0}, 48, registry)
                 ->id == "marine_ie_irish_sea",
         "Marine.ie selected for short Irish Sea request");

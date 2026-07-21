@@ -140,12 +140,13 @@ ProviderRegistry::ProviderRegistry() {
        .coverage = BoundingBox{-180.0, -90.0, 180.0, 90.0},
        .variables = {"49", "50"},
        .implemented = true,
-       .resolution = "full nominal Atlas 1/30 degree source grid",
-       .description = "Offline astronomical tidal-current prediction from an "
-                      "xGRIB XTD data package.",
-       .product_id = "xgrib-global-tides.xtd",
+       .resolution = "package-declared global grids",
+       .description =
+           "Offline tidal streams and optional expected seasonal global-current "
+           "overlay from a curated multi-source xGRIB XTD package.",
+       .product_id = "xgrib-global-currents.xtd",
        .default_step_hours = 1,
-       .provider_type = "local_xtd_harmonic_package"},
+       .provider_type = "local_xtd_current_package"},
       {.id = "synthetic",
        .label = "Synthetic test source",
        .coverage = BoundingBox{-180.0, -90.0, 180.0, 90.0},
