@@ -949,6 +949,18 @@ int wmain(int argc, wchar_t** argv) {
 int main(int argc, char** argv) {
 #endif
   try {
+    if (argc > 0) {
+      std::error_code error;
+      const auto executable = std::filesystem::weakly_canonical(argv[0], error);
+      const auto definitions =
+          executable.parent_path() / "share" / "eccodes" / "definitions";
+      if (!error && std::filesystem::is_directory(definitions))
+        eg::SetEnvironmentIfAbsent("ECCODES_DEFINITION_PATH", definitions);
+      const auto samples =
+          executable.parent_path() / "share" / "eccodes" / "samples";
+      if (!error && std::filesystem::is_directory(samples))
+        eg::SetEnvironmentIfAbsent("ECCODES_SAMPLES_PATH", samples);
+    }
     if (argc < 2) {
       Usage();
       return 2;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -30,6 +31,16 @@ inline std::filesystem::path PathFromUtf8(std::string_view value) {
   return std::filesystem::path(std::u8string(data, data + value.size()));
 #else
   return std::filesystem::path(value);
+#endif
+}
+
+inline void SetEnvironmentIfAbsent(const char* name,
+                                   const std::filesystem::path& value) {
+  if (std::getenv(name)) return;
+#ifdef _WIN32
+  ::_putenv_s(name, PathToUtf8(value).c_str());
+#else
+  ::setenv(name, value.c_str(), 0);
 #endif
 }
 
