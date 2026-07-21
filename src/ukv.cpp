@@ -208,7 +208,7 @@ public:
                 << " +lon_0=" << field.lon0 << " +x_0=" << field.false_easting
                 << " +y_0=" << field.false_northing
                 << " +a=" << field.semi_major << " +b=" << field.semi_minor
-                << " +units=m +no_defs";
+                << " +units=m +no_defs +type=crs";
     PJ* raw = proj_create_crs_to_crs(context_, "EPSG:4326",
                                      destination.str().c_str(), nullptr);
     projection_ =
