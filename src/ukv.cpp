@@ -202,31 +202,55 @@ std::pair<double, bool> Interpolate(const ProjectedField& field, double x,
 class Projection {
 public:
   explicit Projection(const ProjectedField& field) {
+    const std::array<double, 6> parameters{
+        field.lat0,           field.lon0,       field.false_easting,
+        field.false_northing, field.semi_major, field.semi_minor};
+    if (!std::all_of(parameters.begin(), parameters.end(),
+                     [](double value) { return std::isfinite(value); }) ||
+        field.semi_major <= 0.0 || field.semi_minor <= 0.0)
+      throw ValidationError("UKV source has invalid projection parameters");
     context_ = proj_context_create();
-    std::ostringstream destination;
-    destination << "+proj=laea +lat_0=" << field.lat0
-                << " +lon_0=" << field.lon0 << " +x_0=" << field.false_easting
-                << " +y_0=" << field.false_northing
-                << " +a=" << field.semi_major << " +b=" << field.semi_minor
-                << " +units=m +no_defs +type=crs";
-    PJ* raw = proj_create_crs_to_crs(context_, "EPSG:4326",
-                                     destination.str().c_str(), nullptr);
-    projection_ =
-        raw ? proj_normalize_for_visualization(context_, raw) : nullptr;
-    if (raw) proj_destroy(raw);
-    if (!projection_)
-      throw ValidationError(
-          "PROJ could not create UKV coordinate transformation");
+    if (!context_)
+      throw ValidationError("PROJ could not create a UKV projection context");
+
+    // Use an explicit degrees-to-LAEA pipeline rather than a CRS-to-CRS
+    // operation.  The latter requires the external proj.db database and a
+    // normalization step even though the UKV NetCDF files already provide
+    // every projection parameter.  A self-contained pipeline is both more
+    // deterministic and suitable for the capability-restricted helper.
+    std::ostringstream pipeline;
+    pipeline << "+proj=pipeline"
+             << " +step +proj=unitconvert +xy_in=deg +xy_out=rad"
+             << " +step +proj=laea +lat_0=" << field.lat0
+             << " +lon_0=" << field.lon0 << " +x_0=" << field.false_easting
+             << " +y_0=" << field.false_northing << " +a=" << field.semi_major
+             << " +b=" << field.semi_minor << " +units=m +no_defs";
+    projection_ = proj_create(context_, pipeline.str().c_str());
+    if (!projection_) {
+      const int error = proj_context_errno(context_);
+      std::string message = "PROJ could not create UKV coordinate pipeline";
+      if (const char* detail = proj_errno_string(error); detail && *detail)
+        message += ": " + std::string(detail);
+      proj_context_destroy(context_);
+      context_ = nullptr;
+      throw ValidationError(message);
+    }
   }
   ~Projection() {
     if (projection_) proj_destroy(projection_);
     if (context_) proj_context_destroy(context_);
   }
   std::pair<double, double> Forward(double lon, double lat) const {
+    proj_errno_reset(projection_);
     const auto coordinate =
         proj_trans(projection_, PJ_FWD, proj_coord(lon, lat, 0, 0));
-    if (proj_errno(projection_))
-      throw ValidationError("PROJ failed UKV coordinate transformation");
+    const int error = proj_errno(projection_);
+    if (error) {
+      std::string message = "PROJ failed UKV coordinate transformation";
+      if (const char* detail = proj_errno_string(error); detail && *detail)
+        message += ": " + std::string(detail);
+      throw ValidationError(message);
+    }
     return {coordinate.xy.x, coordinate.xy.y};
   }
 
@@ -309,7 +333,8 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
   if (request.grid_spacing_deg <= 0.0)
     throw ValidationError("UKV grid spacing must be positive");
   if (std::filesystem::exists(request.output) && !request.overwrite)
-    throw ValidationError("output already exists: " + PathToUtf8(request.output));
+    throw ValidationError("output already exists: " +
+                          PathToUtf8(request.output));
   const auto hours = UkvForecastHours(request.hours, request.step_hours);
   const TimePoint current =
       now.value_or(std::chrono::time_point_cast<std::chrono::seconds>(
