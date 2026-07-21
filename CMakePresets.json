@@ -1,0 +1,77 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release-common",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/presets/${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-helper-x64-release",
+      "displayName": "Windows x64 environmental helper Release validation",
+      "description": "x64 helper preset used with xGRIB's Release-only vcpkg triplet",
+      "inherits": "release-common",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_TRIPLETS": "$env{XGRIB_VCPKG_OVERLAY_TRIPLETS}",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-release"
+      }
+    },
+    {
+      "name": "native-release",
+      "displayName": "Native helper Release validation",
+      "description": "Native Release helper build for Linux or macOS development",
+      "inherits": "release-common",
+      "generator": "Unix Makefiles",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-helper-x64-release-build",
+      "configurePreset": "windows-helper-x64-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "native-release-build",
+      "configurePreset": "native-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-helper-x64-release-test",
+      "configurePreset": "windows-helper-x64-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-release-test",
+      "configurePreset": "native-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
