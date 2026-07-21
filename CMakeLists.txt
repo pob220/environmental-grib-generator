@@ -47,6 +47,14 @@ if(MSVC)
       "/MANIFEST:EMBED"
       "/MANIFESTINPUT:${ENVIRONMENTAL_GRIB_WINDOWS_UTF8_MANIFEST}")
   endfunction()
+
+  # vcpkg builds ecCodes with OpenMP threading on Windows.  Install both the
+  # MSVC runtime and vcomp140.dll beside the executable so a packaged helper
+  # does not depend on Visual Studio or a machine-wide redistributable being
+  # present on PATH.
+  set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+  include(InstallRequiredSystemLibraries)
 endif()
 
 add_library(environmental_grib_engine STATIC
