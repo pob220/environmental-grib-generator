@@ -47,6 +47,8 @@ struct EnvironmentRequest {
   bool overwrite{false};
   bool keep_intermediate{false};
   bool dry_run{false};
+  // Internal orchestration switch used by single-component child jobs.
+  bool parallel_components{true};
 };
 
 struct EnvironmentResult {
@@ -62,10 +64,10 @@ struct EnvironmentResult {
   Json::Value diagnostics{Json::objectValue};
 };
 
-EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
-                                      HttpGet http_get = {},
-                                      std::optional<TimePoint> now = std::nullopt,
-                                      ProgressCallback progress = {});
+EnvironmentResult GenerateEnvironment(
+    const EnvironmentRequest& request, HttpGet http_get = {},
+    std::optional<TimePoint> now = std::nullopt,
+    ProgressCallback progress = {});
 Json::Value EnvironmentResultJson(const EnvironmentResult& result);
 
 }  // namespace environmental_grib

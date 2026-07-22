@@ -60,10 +60,15 @@ struct WeatherGenerateResult {
   std::map<std::string, std::string> variables_levels;
 };
 
-using HttpGet = std::function<std::vector<unsigned char>(const std::string&, double)>;
+using HttpGet =
+    std::function<std::vector<unsigned char>(const std::string&, double)>;
 using HttpGetRange = std::function<std::vector<unsigned char>(
     const std::string&, std::size_t, std::size_t, double)>;
-using ProgressCallback = std::function<void(const std::string&, const Json::Value&)>;
+using ProgressCallback =
+    std::function<void(const std::string&, const Json::Value&)>;
+
+ProgressCallback SynchronizedProgressCallback(ProgressCallback progress);
+void EnsureHttpInitialized();
 
 struct HttpRetryPolicy {
   int max_attempts{3};
@@ -74,20 +79,22 @@ struct HttpRetryPolicy {
 using RetrySleeper = std::function<void(int)>;
 
 std::string SanitizedHttpResource(const std::string& url);
-HttpGet MakeRetryingHttpGet(
-    HttpGet download, const std::string& provider,
-    ProgressCallback progress = {}, HttpRetryPolicy policy = {},
-    RetrySleeper sleeper = {});
-HttpGetRange MakeRetryingHttpGetRange(
-    HttpGetRange download, const std::string& provider,
-    ProgressCallback progress = {}, HttpRetryPolicy policy = {},
-    RetrySleeper sleeper = {});
+HttpGet MakeRetryingHttpGet(HttpGet download, const std::string& provider,
+                            ProgressCallback progress = {},
+                            HttpRetryPolicy policy = {},
+                            RetrySleeper sleeper = {});
+HttpGetRange MakeRetryingHttpGetRange(HttpGetRange download,
+                                      const std::string& provider,
+                                      ProgressCallback progress = {},
+                                      HttpRetryPolicy policy = {},
+                                      RetrySleeper sleeper = {});
 
 std::vector<WeatherProvider> ListWeatherProviders();
 std::vector<int> ForecastHourSequence(int hours, int step_hours);
-std::map<std::string, std::string> GfsVariablesForPreset(const std::string& preset);
-std::vector<GFSCycle> GfsCycleCandidates(const GFSRequest& request,
-                                         std::optional<TimePoint> now = std::nullopt);
+std::map<std::string, std::string> GfsVariablesForPreset(
+    const std::string& preset);
+std::vector<GFSCycle> GfsCycleCandidates(
+    const GFSRequest& request, std::optional<TimePoint> now = std::nullopt);
 std::string BuildGfsFilterUrl(const GFSCycle& cycle, int forecast_hour,
                               const BoundingBox& bbox,
                               const std::map<std::string, std::string>& fields);
@@ -124,14 +131,13 @@ std::map<std::string, std::string> HrrrVariablesForPreset(
 std::string BuildHrrrFileUrl(const GFSCycle& cycle, int forecast_hour);
 std::string BuildHrrrIndexUrl(const GFSCycle& cycle, int forecast_hour);
 std::vector<unsigned char> CurlHttpGetRange(const std::string& url,
-                                            std::size_t start,
-                                            std::size_t end,
+                                            std::size_t start, std::size_t end,
                                             double timeout_seconds);
-WeatherGenerateResult GenerateHrrr(
-    const GFSRequest& request, HttpGet http_get = {},
-    HttpGetRange http_get_range = {},
-    std::optional<TimePoint> now = std::nullopt,
-    ProgressCallback progress = {});
+WeatherGenerateResult GenerateHrrr(const GFSRequest& request,
+                                   HttpGet http_get = {},
+                                   HttpGetRange http_get_range = {},
+                                   std::optional<TimePoint> now = std::nullopt,
+                                   ProgressCallback progress = {});
 std::string BuildEcmwfDataUrl(const GFSCycle& cycle, int forecast_hour,
                               bool aifs);
 std::string BuildEcmwfIndexUrl(const GFSCycle& cycle, int forecast_hour,

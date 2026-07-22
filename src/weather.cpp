@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
+#include <memory>
+#include <mutex>
+#include <semaphore>
 #include <sstream>
 #include <set>
 #include <thread>
@@ -17,6 +20,7 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/ukv.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/parallel.h"
 #include "environmental_grib/platform.h"
 
 namespace environmental_grib {
@@ -155,6 +159,15 @@ std::size_t CurlWrite(void* data, std::size_t size, std::size_t count,
   return bytes;
 }
 
+CURL* ThreadCurlHandle() {
+  EnsureHttpInitialized();
+  thread_local std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle(
+      curl_easy_init(), &curl_easy_cleanup);
+  if (!handle) throw Error("libcurl initialization failed");
+  curl_easy_reset(handle.get());
+  return handle.get();
+}
+
 std::vector<std::string> Split(const std::string& value, char separator) {
   std::vector<std::string> result;
   std::istringstream stream(value);
@@ -198,6 +211,18 @@ void Progress(const ProgressCallback& callback, const std::string& stage,
               const Json::Value& details) {
   if (callback) callback(stage, details);
 }
+
+class DownloadPermit {
+public:
+  DownloadPermit() { Slots().acquire(); }
+  ~DownloadPermit() { Slots().release(); }
+
+private:
+  static std::counting_semaphore<64>& Slots() {
+    static std::counting_semaphore<64> slots(8);
+    return slots;
+  }
+};
 
 bool TransientCurlError(CURLcode status) {
   switch (status) {
@@ -259,6 +284,22 @@ Json::Value BboxJson(const BoundingBox& bbox) {
 
 }  // namespace
 
+ProgressCallback SynchronizedProgressCallback(ProgressCallback progress) {
+  if (!progress) return {};
+  auto mutex = std::make_shared<std::mutex>();
+  return [progress = std::move(progress), mutex = std::move(mutex)](
+             const std::string& stage, const Json::Value& details) {
+    std::lock_guard lock(*mutex);
+    progress(stage, details);
+  };
+}
+
+void EnsureHttpInitialized() {
+  static const int initialized = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (initialized != CURLE_OK)
+    throw Error("libcurl global initialization failed");
+}
+
 std::string SanitizedHttpResource(const std::string& url) {
   const auto query = url.find('?');
   std::string result = url.substr(0, query);
@@ -278,6 +319,7 @@ std::string SanitizedHttpResource(const std::string& url) {
 HttpGet MakeRetryingHttpGet(HttpGet download, const std::string& provider,
                             ProgressCallback progress, HttpRetryPolicy policy,
                             RetrySleeper sleeper) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   if (!download) download = CurlHttpGet;
   if (policy.max_attempts < 1 || policy.initial_delay_ms < 0 ||
       policy.maximum_delay_ms < policy.initial_delay_ms) {
@@ -302,6 +344,7 @@ HttpGet MakeRetryingHttpGet(HttpGet download, const std::string& provider,
       details["state"] = "requesting";
       Progress(progress, "downloading " + provider, details);
       try {
+        DownloadPermit permit;
         return download(url, timeout_seconds);
       } catch (const HttpDownloadError& error) {
         if (!error.transient() || attempt >= policy.max_attempts) {
@@ -327,6 +370,7 @@ HttpGetRange MakeRetryingHttpGetRange(HttpGetRange download,
                                       ProgressCallback progress,
                                       HttpRetryPolicy policy,
                                       RetrySleeper sleeper) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   if (!download) download = CurlHttpGetRange;
   if (policy.max_attempts < 1 || policy.initial_delay_ms < 0 ||
       policy.maximum_delay_ms < policy.initial_delay_ms) {
@@ -354,6 +398,7 @@ HttpGetRange MakeRetryingHttpGetRange(HttpGetRange download,
       details["state"] = "requesting";
       Progress(progress, "downloading " + provider, details);
       try {
+        DownloadPermit permit;
         return download(url, start, end, timeout_seconds);
       } catch (const HttpDownloadError& error) {
         if (!error.transient() || attempt >= policy.max_attempts) {
@@ -508,13 +553,13 @@ std::string BuildGfsWaveFilterUrl(const GFSCycle& cycle, int forecast_hour,
 
 std::vector<unsigned char> CurlHttpGet(const std::string& url,
                                        double timeout_seconds) {
-  CURL* curl = curl_easy_init();
-  if (!curl) throw Error("libcurl initialization failed");
+  CURL* curl = ThreadCurlHandle();
   std::vector<unsigned char> output;
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "environmental-grib-generator/0.1");
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
                    static_cast<long>(timeout_seconds * 1000.0));
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
@@ -526,7 +571,6 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
   const CURLcode status = curl_easy_perform(curl);
   long response = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
-  curl_easy_cleanup(curl);
   if (status != CURLE_OK)
     throw HttpDownloadError(
         "HTTP download failed: " + std::string(curl_easy_strerror(status)),
@@ -541,6 +585,7 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
 WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
                                   std::optional<TimePoint> now,
                                   ProgressCallback progress) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   if (!std::set<int>{1, 3, 6, 12}.contains(request.step_hours))
     throw ValidationError("step-hours must be one of 1, 3, 6, or 12 for GFS");
@@ -584,16 +629,24 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
     try {
       segments.clear();
       urls.clear();
-      for (int hour : hours) {
-        const std::string url = url_for(cycle, hour);
-        Json::Value details;
-        details["cycle"] = cycle.CycleTime();
-        details["hour"] = hour;
-        Progress(progress, "downloading forecast hour", details);
-        auto bytes = http_get(url, request.timeout_seconds);
-        ValidateDownloaded(bytes, request.waves ? "GFS Wave" : "GFS");
-        urls.push_back(url);
-        segments.push_back(std::move(bytes));
+      struct DownloadedHour {
+        std::string url;
+        std::vector<unsigned char> bytes;
+      };
+      auto downloaded = ParallelMapOrdered(
+          hours, kDefaultDownloadConcurrency, [&](const int& hour) {
+            const auto url = url_for(cycle, hour);
+            Json::Value details;
+            details["cycle"] = cycle.CycleTime();
+            details["hour"] = hour;
+            Progress(progress, "downloading forecast hour", details);
+            auto bytes = http_get(url, request.timeout_seconds);
+            ValidateDownloaded(bytes, request.waves ? "GFS Wave" : "GFS");
+            return DownloadedHour{url, std::move(bytes)};
+          });
+      for (auto& item : downloaded) {
+        urls.push_back(std::move(item.url));
+        segments.push_back(std::move(item.bytes));
       }
       selected = cycle;
       break;
@@ -706,6 +759,7 @@ WeatherGenerateResult GenerateDwdIconEu(const GFSRequest& request,
                                         HttpGet http_get,
                                         std::optional<TimePoint> now,
                                         ProgressCallback progress) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   const BoundingBox domain{-32.5, 20.0, 42.5, 72.5};
   if (!domain.Contains(request.bbox))
@@ -747,21 +801,40 @@ WeatherGenerateResult GenerateDwdIconEu(const GFSRequest& request,
     try {
       segments.clear();
       urls.clear();
+      struct FieldRequest {
+        int hour{};
+        std::string field;
+      };
+      struct DownloadedField {
+        std::string url;
+        std::vector<unsigned char> data;
+      };
+      std::vector<FieldRequest> requests;
       for (int hour : hours)
         for (const auto& [short_name, field] : fields) {
           (void)short_name;
-          const auto url = BuildDwdIconEuUrl(cycle, hour, field);
-          Json::Value detail;
-          detail["cycle"] = cycle.CycleTime();
-          detail["hour"] = hour;
-          detail["field"] = field;
-          Progress(progress, "downloading DWD ICON-EU field", detail);
-          auto compressed = http_get(url, request.timeout_seconds);
-          auto data = DecompressBzip2(compressed);
-          ValidateDownloaded(data, "DWD ICON-EU");
-          urls.push_back(url);
-          segments.push_back(std::move(data));
+          requests.push_back({hour, field});
         }
+      auto downloaded = ParallelMapOrdered(
+          requests, kDefaultDownloadConcurrency,
+          [&](const FieldRequest& request_field) {
+            const int hour = request_field.hour;
+            const auto& field = request_field.field;
+            const auto url = BuildDwdIconEuUrl(cycle, hour, field);
+            Json::Value detail;
+            detail["cycle"] = cycle.CycleTime();
+            detail["hour"] = hour;
+            detail["field"] = field;
+            Progress(progress, "downloading DWD ICON-EU field", detail);
+            auto compressed = http_get(url, request.timeout_seconds);
+            auto data = DecompressBzip2(compressed);
+            ValidateDownloaded(data, "DWD ICON-EU");
+            return DownloadedField{url, std::move(data)};
+          });
+      for (auto& item : downloaded) {
+        urls.push_back(std::move(item.url));
+        segments.push_back(std::move(item.data));
+      }
       selected = cycle;
       break;
     } catch (const ValidationError&) {
@@ -855,8 +928,7 @@ std::vector<unsigned char> CurlHttpGetRange(const std::string& url,
                                             std::size_t start, std::size_t end,
                                             double timeout_seconds) {
   if (end < start) throw ValidationError("invalid HTTP byte range");
-  CURL* curl = curl_easy_init();
-  if (!curl) throw Error("libcurl initialization failed");
+  CURL* curl = ThreadCurlHandle();
   std::vector<unsigned char> output;
   const std::string range = std::to_string(start) + "-" + std::to_string(end);
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -864,6 +936,7 @@ std::vector<unsigned char> CurlHttpGetRange(const std::string& url,
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "environmental-grib-generator/0.1");
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
                    static_cast<long>(timeout_seconds * 1000.0));
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
@@ -871,7 +944,6 @@ std::vector<unsigned char> CurlHttpGetRange(const std::string& url,
   const CURLcode status = curl_easy_perform(curl);
   long response = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
-  curl_easy_cleanup(curl);
   if (status != CURLE_OK)
     throw HttpDownloadError("HTTP range download failed: " +
                                 std::string(curl_easy_strerror(status)),
@@ -891,6 +963,7 @@ WeatherGenerateResult GenerateHrrr(const GFSRequest& request, HttpGet http_get,
                                    HttpGetRange http_get_range,
                                    std::optional<TimePoint> now,
                                    ProgressCallback progress) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   if (!BoundingBox{-130.0, 20.0, -60.0, 55.0}.Contains(request.bbox))
     throw ValidationError(
@@ -963,43 +1036,52 @@ WeatherGenerateResult GenerateHrrr(const GFSRequest& request, HttpGet http_get,
     try {
       hour_segments.clear();
       urls.clear();
-      for (int hour : hours) {
-        const auto index_url = BuildHrrrIndexUrl(cycle, hour);
-        const auto file_url = BuildHrrrFileUrl(cycle, hour);
-        Json::Value detail;
-        detail["cycle"] = cycle.CycleTime();
-        detail["hour"] = hour;
-        Progress(progress, "checking HRRR inventory", detail);
-        const auto index_bytes = http_get(index_url, request.timeout_seconds);
-        const std::string text(index_bytes.begin(), index_bytes.end());
-        const auto inventory = ParseHrrrInventory(text);
-        if (inventory.empty())
-          throw ValidationError("HRRR inventory was empty or unreadable");
-        std::vector<unsigned char> combined;
-        std::set<std::pair<std::string, std::string>> found;
-        for (std::size_t i = 0; i < inventory.size(); ++i) {
-          const auto key =
-              std::make_pair(inventory[i].short_name, inventory[i].level);
-          if (!requested.contains(key)) continue;
-          if (i + 1 == inventory.size())
-            throw ValidationError(
-                "HRRR selected final inventory message without following "
-                "offset");
-          auto bytes = http_get_range(file_url, inventory[i].offset,
-                                      inventory[i + 1].offset - 1,
-                                      request.timeout_seconds);
-          ValidateDownloaded(bytes, "HRRR");
-          detail["field"] = inventory[i].short_name;
-          detail["level"] = inventory[i].level;
-          Progress(progress, "downloaded HRRR indexed field", detail);
-          combined.insert(combined.end(), bytes.begin(), bytes.end());
-          found.insert(key);
-        }
-        if (found != requested)
-          throw ValidationError(
-              "HRRR inventory did not contain all required fields");
-        hour_segments.push_back(std::move(combined));
-        urls.push_back(file_url);
+      struct DownloadedHour {
+        std::string url;
+        std::vector<unsigned char> bytes;
+      };
+      auto downloaded = ParallelMapOrdered(
+          hours, kDefaultDownloadConcurrency, [&](const int& hour) {
+            const auto index_url = BuildHrrrIndexUrl(cycle, hour);
+            const auto file_url = BuildHrrrFileUrl(cycle, hour);
+            Json::Value detail;
+            detail["cycle"] = cycle.CycleTime();
+            detail["hour"] = hour;
+            Progress(progress, "checking HRRR inventory", detail);
+            const auto index_bytes =
+                http_get(index_url, request.timeout_seconds);
+            const std::string text(index_bytes.begin(), index_bytes.end());
+            const auto inventory = ParseHrrrInventory(text);
+            if (inventory.empty())
+              throw ValidationError("HRRR inventory was empty or unreadable");
+            std::vector<unsigned char> combined;
+            std::set<std::pair<std::string, std::string>> found;
+            for (std::size_t i = 0; i < inventory.size(); ++i) {
+              const auto key =
+                  std::make_pair(inventory[i].short_name, inventory[i].level);
+              if (!requested.contains(key)) continue;
+              if (i + 1 == inventory.size())
+                throw ValidationError(
+                    "HRRR selected final inventory message without following "
+                    "offset");
+              auto bytes = http_get_range(file_url, inventory[i].offset,
+                                          inventory[i + 1].offset - 1,
+                                          request.timeout_seconds);
+              ValidateDownloaded(bytes, "HRRR");
+              detail["field"] = inventory[i].short_name;
+              detail["level"] = inventory[i].level;
+              Progress(progress, "downloaded HRRR indexed field", detail);
+              combined.insert(combined.end(), bytes.begin(), bytes.end());
+              found.insert(key);
+            }
+            if (found != requested)
+              throw ValidationError(
+                  "HRRR inventory did not contain all required fields");
+            return DownloadedHour{file_url, std::move(combined)};
+          });
+      for (auto& item : downloaded) {
+        urls.push_back(std::move(item.url));
+        hour_segments.push_back(std::move(item.bytes));
       }
       selected = cycle;
       break;
@@ -1060,6 +1142,7 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
                                             HttpGetRange http_get_range,
                                             std::optional<TimePoint> now,
                                             ProgressCallback progress) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   if (aifs && request.step_hours != 6 && request.step_hours != 12)
     throw ValidationError(
@@ -1099,52 +1182,61 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
     try {
       segments.clear();
       urls.clear();
-      for (int hour : hours) {
-        const auto data_url = BuildEcmwfDataUrl(cycle, hour, aifs);
-        const auto index_bytes = http_get(BuildEcmwfIndexUrl(cycle, hour, aifs),
+      struct DownloadedHour {
+        std::string url;
+        std::vector<unsigned char> bytes;
+      };
+      auto downloaded = ParallelMapOrdered(
+          hours, kDefaultDownloadConcurrency, [&](const int& hour) {
+            const auto data_url = BuildEcmwfDataUrl(cycle, hour, aifs);
+            const auto index_bytes = http_get(
+                BuildEcmwfIndexUrl(cycle, hour, aifs), request.timeout_seconds);
+            std::istringstream lines(
+                std::string(index_bytes.begin(), index_bytes.end()));
+            std::string line;
+            std::set<std::string> found;
+            std::vector<unsigned char> combined;
+            while (std::getline(lines, line)) {
+              Json::CharReaderBuilder builder;
+              Json::Value entry;
+              std::string errors;
+              std::istringstream json(line);
+              if (!Json::parseFromStream(builder, json, &entry, &errors))
+                continue;
+              const std::string parameter = entry.get("param", "").asString();
+              const std::string type = entry.get("type", "").asString();
+              const std::string level = entry.get("levtype", "").asString();
+              const auto& step_value = entry["step"];
+              const std::string step = step_value.isString()
+                                           ? step_value.asString()
+                                           : std::to_string(step_value.asInt());
+              if (!wanted.contains(parameter) || type != "fc" ||
+                  level != "sfc" || step != std::to_string(hour))
+                continue;
+              const auto offset = entry["_offset"].asUInt64();
+              const auto length = entry["_length"].asUInt64();
+              if (length == 0)
+                throw ValidationError(
+                    "ECMWF index contains zero-length selected field");
+              auto bytes = http_get_range(data_url, offset, offset + length - 1,
                                           request.timeout_seconds);
-        std::istringstream lines(
-            std::string(index_bytes.begin(), index_bytes.end()));
-        std::string line;
-        std::set<std::string> found;
-        std::vector<unsigned char> combined;
-        while (std::getline(lines, line)) {
-          Json::CharReaderBuilder builder;
-          Json::Value entry;
-          std::string errors;
-          std::istringstream json(line);
-          if (!Json::parseFromStream(builder, json, &entry, &errors)) continue;
-          const std::string parameter = entry.get("param", "").asString();
-          const std::string type = entry.get("type", "").asString();
-          const std::string level = entry.get("levtype", "").asString();
-          const auto& step_value = entry["step"];
-          const std::string step = step_value.isString()
-                                       ? step_value.asString()
-                                       : std::to_string(step_value.asInt());
-          if (!wanted.contains(parameter) || type != "fc" || level != "sfc" ||
-              step != std::to_string(hour))
-            continue;
-          const auto offset = entry["_offset"].asUInt64();
-          const auto length = entry["_length"].asUInt64();
-          if (length == 0)
-            throw ValidationError(
-                "ECMWF index contains zero-length selected field");
-          auto bytes = http_get_range(data_url, offset, offset + length - 1,
-                                      request.timeout_seconds);
-          ValidateDownloaded(bytes, aifs ? "ECMWF AIFS" : "ECMWF IFS");
-          combined.insert(combined.end(), bytes.begin(), bytes.end());
-          found.insert(parameter);
-          Json::Value detail;
-          detail["cycle"] = cycle.CycleTime();
-          detail["hour"] = hour;
-          detail["field"] = parameter;
-          Progress(progress, "downloaded ECMWF indexed field", detail);
-        }
-        if (found != wanted)
-          throw ValidationError(
-              "ECMWF index did not contain all requested surface fields");
-        segments.push_back(std::move(combined));
-        urls.push_back(data_url);
+              ValidateDownloaded(bytes, aifs ? "ECMWF AIFS" : "ECMWF IFS");
+              combined.insert(combined.end(), bytes.begin(), bytes.end());
+              found.insert(parameter);
+              Json::Value detail;
+              detail["cycle"] = cycle.CycleTime();
+              detail["hour"] = hour;
+              detail["field"] = parameter;
+              Progress(progress, "downloaded ECMWF indexed field", detail);
+            }
+            if (found != wanted)
+              throw ValidationError(
+                  "ECMWF index did not contain all requested surface fields");
+            return DownloadedHour{data_url, std::move(combined)};
+          });
+      for (auto& item : downloaded) {
+        urls.push_back(std::move(item.url));
+        segments.push_back(std::move(item.bytes));
       }
       selected = cycle;
       break;

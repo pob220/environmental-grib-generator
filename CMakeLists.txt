@@ -152,6 +152,27 @@ if(BUILD_TESTING)
     COMMAND environmental_grib_merge_tests ${ENVIRONMENTAL_GRIB_FIXTURE_DIR})
   set_tests_properties(environmental_grib_merge_tests PROPERTIES
     FIXTURES_SETUP environmental_grib_combined_fixture)
+
+  add_executable(environmental_grib_performance_benchmark
+    tests/performance_benchmark.cpp
+  )
+  target_link_libraries(environmental_grib_performance_benchmark PRIVATE
+    environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(
+      environmental_grib_performance_benchmark)
+  endif()
+
+  add_executable(environmental_grib_concurrency_tests
+    tests/concurrency_tests.cpp
+  )
+  target_link_libraries(environmental_grib_concurrency_tests PRIVATE
+    environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_concurrency_tests)
+  endif()
+  add_test(NAME environmental_grib_concurrency_tests
+    COMMAND environmental_grib_concurrency_tests)
 endif()
 
 install(TARGETS environmental_grib_engine environmental-grib

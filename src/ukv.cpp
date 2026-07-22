@@ -16,6 +16,7 @@
 
 #include "environmental_grib/error.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/parallel.h"
 #include "environmental_grib/platform.h"
 
 namespace environmental_grib {
@@ -325,6 +326,7 @@ std::string UkvSourceKey(const std::string& cycle, int hour,
 WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
                                   std::optional<TimePoint> now,
                                   ProgressCallback progress) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   if (!kUkvDomain.Contains(request.bbox))
     throw ValidationError("UKV bbox is outside UK/Ireland domain");
@@ -363,35 +365,59 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
     files.clear();
     urls.clear();
     bool complete = true;
+    struct FieldRequest {
+      int hour{};
+      std::string short_name;
+      std::string token;
+      std::filesystem::path path;
+    };
+    struct DownloadedField {
+      std::pair<int, std::string> key;
+      std::filesystem::path path;
+      std::string url;
+    };
+    std::vector<FieldRequest> requests;
+    for (int hour : hours)
+      for (const auto& [short_name, token] : kFields) {
+        auto path = std::filesystem::temp_directory_path() /
+                    ("environmental-ukv-" + std::to_string(ProcessId()) + "-" +
+                     std::to_string(hour) + "-" + short_name + ".nc");
+        requests.push_back({hour, short_name, token, std::move(path)});
+      }
     try {
-      for (int hour : hours)
-        for (const auto& [short_name, token] : kFields) {
-          const auto key = UkvSourceKey(cycle, hour, token);
-          const auto url = std::string(kEndpoint) + key;
-          Json::Value detail;
-          detail["cycle"] = cycle;
-          detail["hour"] = hour;
-          detail["field"] = token;
-          if (progress) progress("downloading Met Office UKV source", detail);
-          const auto bytes = download(url, request.timeout_seconds);
-          if (bytes.empty())
-            throw ValidationError("UKV source download was empty");
-          auto path = std::filesystem::temp_directory_path() /
-                      ("environmental-ukv-" + std::to_string(ProcessId()) +
-                       "-" + std::to_string(hour) + "-" + short_name + ".nc");
-          std::ofstream out(path, std::ios::binary | std::ios::trunc);
-          out.write(reinterpret_cast<const char*>(bytes.data()),
-                    static_cast<std::streamsize>(bytes.size()));
-          if (!out) throw ValidationError("writing UKV source file failed");
-          files[{hour, short_name}] = path;
-          urls.push_back(url);
-        }
+      auto downloaded = ParallelMapOrdered(
+          requests, kDefaultDownloadConcurrency,
+          [&](const FieldRequest& field_request) {
+            const auto key =
+                UkvSourceKey(cycle, field_request.hour, field_request.token);
+            const auto url = std::string(kEndpoint) + key;
+            Json::Value detail;
+            detail["cycle"] = cycle;
+            detail["hour"] = field_request.hour;
+            detail["field"] = field_request.token;
+            if (progress) progress("downloading Met Office UKV source", detail);
+            const auto bytes = download(url, request.timeout_seconds);
+            if (bytes.empty())
+              throw ValidationError("UKV source download was empty");
+            std::ofstream out(field_request.path,
+                              std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(bytes.data()),
+                      static_cast<std::streamsize>(bytes.size()));
+            if (!out) throw ValidationError("writing UKV source file failed");
+            return DownloadedField{
+                {field_request.hour, field_request.short_name},
+                field_request.path,
+                url};
+          });
+      for (auto& item : downloaded) {
+        files[item.key] = std::move(item.path);
+        urls.push_back(std::move(item.url));
+      }
     } catch (...) {
       complete = false;
-      for (const auto& [key, path] : files) {
-        (void)key;
+      for (const auto& item : requests) {
         std::error_code ignored;
-        std::filesystem::remove(path, ignored);
+        std::filesystem::remove(item.path, ignored);
       }
       if (request.cycle != "auto") throw;
     }
@@ -402,6 +428,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
   }
   if (selected.empty())
     throw ValidationError("no complete UKV cycle was available");
+  std::lock_guard netcdf_lock(NetcdfApiMutex());
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   std::vector<Grib2Field> output_fields;
   for (int hour : hours) {

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -1068,9 +1069,8 @@ int main() {
   const auto period_chunk = BloscInt16(std::vector<std::int16_t>(9, 800));
   const auto direction_chunk = BloscInt16(std::vector<std::int16_t>(9, 9000));
   const auto remote_waves = eg::GenerateCopernicusGlobalWaves(
-      eg::BoundingBox{-7.0, 51.5, -6.0, 52.5},
-      start + std::chrono::hours(1), 0, 3, "test-user",
-      "secret", remote_wave_output, 0.5, true,
+      eg::BoundingBox{-7.0, 51.5, -6.0, 52.5}, start + std::chrono::hours(1), 0,
+      3, "test-user", "secret", remote_wave_output, 0.5, true,
       [&](const std::string& url, double) {
         if (url.find("product.stac.json") != std::string::npos)
           return std::vector<unsigned char>(wave_product.begin(),
@@ -1164,7 +1164,7 @@ int main() {
   hourly_resume.step_hours = 1;
   hourly_resume.current_source = "marine_ie_irish_sea";
   hourly_resume.current_file.reset();
-  int first_weather_requests = 0;
+  std::atomic<int> first_weather_requests{0};
   bool first_failed = false;
   try {
     eg::GenerateEnvironment(
@@ -1178,9 +1178,9 @@ int main() {
   } catch (const eg::ValidationError&) {
     first_failed = true;
   }
-  Check(first_failed && first_weather_requests == 2,
+  Check(first_failed && first_weather_requests.load() == 2,
         "hourly environment failure occurs after completed weather stage");
-  int resumed_weather_requests = 0;
+  std::atomic<int> resumed_weather_requests{0};
   bool reused_weather = false;
   const auto resumed_environment = eg::GenerateEnvironment(
       hourly_resume,
@@ -1193,7 +1193,7 @@ int main() {
       [&](const std::string& stage, const Json::Value&) {
         if (stage == "reusing completed weather") reused_weather = true;
       });
-  Check(resumed_weather_requests == 0 && reused_weather &&
+  Check(resumed_weather_requests.load() == 0 && reused_weather &&
             resumed_environment.selected_cycle == "20260701T0000Z" &&
             resumed_environment.message_count == 6,
         "validated hourly weather checkpoint resumes without redownload");
@@ -1205,7 +1205,7 @@ int main() {
   coupled_resume.include_waves = true;
   coupled_resume.wave_provider = "gfs_wave";
   coupled_resume.wave_step_hours = 1;
-  int first_coupled_requests = 0;
+  std::atomic<int> first_coupled_requests{0};
   try {
     eg::GenerateEnvironment(
         coupled_resume,
@@ -1218,7 +1218,7 @@ int main() {
         });
   } catch (const eg::ValidationError&) {
   }
-  int resumed_coupled_requests = 0;
+  std::atomic<int> resumed_coupled_requests{0};
   const auto resumed_coupled = eg::GenerateEnvironment(
       coupled_resume, [&](const std::string& url, double) {
         if (url.rfind("ftp://", 0) == 0) return downloaded;
@@ -1226,7 +1226,8 @@ int main() {
         return url.find("wave") != std::string::npos ? wave_downloaded
                                                      : weather_downloaded;
       });
-  Check(first_coupled_requests == 2 && resumed_coupled_requests == 0 &&
+  Check(first_coupled_requests.load() == 2 &&
+            resumed_coupled_requests.load() == 0 &&
             resumed_coupled.message_count == 6,
         "coupled GFS atmosphere/wave checkpoints resume as a matched cycle");
   const auto merged_path = Temp("merged.grb");
@@ -1331,8 +1332,8 @@ int main() {
             recovered_weather[1]["status"].asString() == "complete",
         "selected long-range weather recovers a failed preferred provider");
 
-  const auto unicode_directory = Temp("unicode") /
-                                 std::filesystem::path(u8"navigation-航海");
+  const auto unicode_directory =
+      Temp("unicode") / std::filesystem::path(u8"navigation-航海");
   std::filesystem::create_directories(unicode_directory);
   const auto netcdf_path = unicode_directory / u8"currents-åäö.nc";
   WriteNetCDFFixture(netcdf_path, "cm/s");

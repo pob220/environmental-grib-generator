@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <optional>
 #include <sstream>
@@ -10,6 +11,7 @@
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/netcdf.h"
+#include "environmental_grib/parallel.h"
 #include "environmental_grib/platform.h"
 #include "environmental_grib/providers.h"
 #include "environmental_grib/remote_currents.h"
@@ -239,12 +241,12 @@ private:
 
 std::string CommonFingerprint(const EnvironmentRequest& request) {
   std::ostringstream value;
-  value
-      << std::setprecision(17) << request.bbox.west << ',' << request.bbox.south
-      << ',' << request.bbox.east << ',' << request.bbox.north << '|'
-      << FormatUtcDateTime(request.start) << '|' << request.hours << '|'
-      << PathToUtf8(
-             std::filesystem::absolute(request.output).lexically_normal());
+  value << std::setprecision(17) << request.bbox.west << ','
+        << request.bbox.south << ',' << request.bbox.east << ','
+        << request.bbox.north << '|' << FormatUtcDateTime(request.start) << '|'
+        << request.hours << '|'
+        << PathToUtf8(
+               std::filesystem::absolute(request.output).lexically_normal());
   return value.str();
 }
 
@@ -644,6 +646,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                       HttpGet http_get,
                                       std::optional<TimePoint> now,
                                       ProgressCallback progress) {
+  progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   BuildTimeSequence(request.start, request.hours, request.step_hours);
   if (request.output.empty())
@@ -724,6 +727,72 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   const bool coupled_gfs = request.weather_provider == "gfs" &&
                            request.include_waves &&
                            request.wave_provider == "gfs_wave";
+  const bool cacheable_waves = request.include_waves && !coupled_gfs;
+  const std::string wave_fingerprint = WaveFingerprint(request, std::nullopt);
+  bool restored_waves = false;
+  std::optional<std::string> wave_cycle;
+  if (cacheable_waves) {
+    if (const auto cached = resume.Restore("waves", wave_fingerprint,
+                                           workspace.File("waves.grb"))) {
+      selected_cycle = cached->selected_cycle;
+      wave_cycle = cached->selected_cycle;
+      restored_waves = true;
+    }
+  }
+  std::optional<std::future<EnvironmentResult>> wave_future;
+  if (request.parallel_components && request.include_waves && !coupled_gfs &&
+      !restored_waves) {
+    EnvironmentRequest child = request;
+    child.extend_forecast = false;
+    child.fallback_weather_provider = "none";
+    child.fallback_wave_provider = "none";
+    child.fallback_current_source = "none";
+    child.weather_provider = "none";
+    child.include_waves = true;
+    child.current_source = "none";
+    child.output = workspace.File("waves.grb");
+    child.overwrite = true;
+    child.parallel_components = false;
+    wave_future.emplace(std::async(
+        std::launch::async,
+        [child = std::move(child), http_get, now, progress]() mutable {
+          return GenerateEnvironment(child, http_get, now, progress);
+        }));
+  }
+  const bool cacheable_current = current_source == "marine_ie_irish_sea" ||
+                                 current_source == "copernicus_nws" ||
+                                 current_source == "copernicus_global" ||
+                                 current_source == "copernicus_ibi" ||
+                                 current_source == "copernicus_mediterranean" ||
+                                 current_source == "noaa_rtofs_global";
+  const std::string current_fingerprint =
+      CurrentFingerprint(request, current_source);
+  bool restored_current = false;
+  if (cacheable_current) {
+    if (const auto cached = resume.Restore("current", current_fingerprint,
+                                           workspace.File("current.grb"))) {
+      restored_current = true;
+    }
+  }
+  std::optional<std::future<EnvironmentResult>> current_future;
+  if (request.parallel_components && cacheable_current && !restored_current) {
+    EnvironmentRequest child = request;
+    child.extend_forecast = false;
+    child.fallback_weather_provider = "none";
+    child.fallback_wave_provider = "none";
+    child.fallback_current_source = "none";
+    child.weather_provider = "none";
+    child.include_waves = false;
+    child.current_source = current_source;
+    child.parallel_components = false;
+    child.output = workspace.File("current.grb");
+    child.overwrite = true;
+    current_future.emplace(std::async(
+        std::launch::async,
+        [child = std::move(child), http_get, now, progress]() mutable {
+          return GenerateEnvironment(child, http_get, now, progress);
+        }));
+  }
   const bool cacheable_weather = request.weather_provider != "none" &&
                                  request.weather_provider != "existing-file" &&
                                  !coupled_gfs;
@@ -782,10 +851,6 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
           GFSRequest atmosphere = probe;
           atmosphere.cycle = candidate.cycle;
           atmosphere.date = candidate.date;
-          const auto weather = GenerateGfs(
-              atmosphere,
-              MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress), now,
-              progress);
           GFSRequest waves{request.bbox,
                            workspace.File("waves.grb"),
                            request.hours,
@@ -798,11 +863,34 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                            false,
                            "routing",
                            true};
-          const auto wave = GenerateGfs(
-              waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
-              now, progress);
-          streams.emplace_back("weather", weather.output);
-          streams.emplace_back("waves", wave.output);
+          auto weather_future = std::async(std::launch::async, [&, atmosphere] {
+            return GenerateGfs(
+                atmosphere,
+                MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
+                now, progress);
+          });
+          auto wave_future = std::async(std::launch::async, [&, waves] {
+            return GenerateGfs(
+                waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
+                now, progress);
+          });
+          std::optional<WeatherGenerateResult> weather;
+          std::optional<WeatherGenerateResult> wave;
+          std::exception_ptr weather_error, wave_error;
+          try {
+            weather = weather_future.get();
+          } catch (...) {
+            weather_error = std::current_exception();
+          }
+          try {
+            wave = wave_future.get();
+          } catch (...) {
+            wave_error = std::current_exception();
+          }
+          if (weather_error) std::rethrow_exception(weather_error);
+          if (wave_error) std::rethrow_exception(wave_error);
+          streams.emplace_back("weather", weather->output);
+          streams.emplace_back("waves", wave->output);
           selected_cycle = candidate.CycleTime();
           complete = true;
           break;
@@ -923,19 +1011,16 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     resume.Save("waves", WaveFingerprint(request, selected_cycle),
                 workspace.File("waves.grb"), selected_cycle);
   }
-  const bool cacheable_waves = request.include_waves && !coupled_gfs;
-  const std::string wave_fingerprint = WaveFingerprint(request, std::nullopt);
-  bool restored_waves = false;
-  if (cacheable_waves && !has_stream("waves")) {
-    if (const auto cached = resume.Restore("waves", wave_fingerprint,
-                                           workspace.File("waves.grb"))) {
-      streams.emplace_back("waves", cached->path);
-      if (!selected_cycle) selected_cycle = cached->selected_cycle;
-      restored_waves = true;
-    }
+  if (restored_waves) {
+    streams.emplace_back("waves", workspace.File("waves.grb"));
+  } else if (wave_future) {
+    const auto generated = wave_future->get();
+    streams.emplace_back("waves", generated.output);
+    wave_cycle = generated.selected_cycle;
+    if (!selected_cycle) selected_cycle = generated.selected_cycle;
+    for (const auto& name : generated.diagnostics.getMemberNames())
+      diagnostics[name] = generated.diagnostics[name];
   }
-
-  std::optional<std::string> wave_cycle;
   if (request.include_waves && request.wave_provider == "gfs_wave" &&
       !has_stream("waves")) {
     GFSRequest waves{request.bbox,
@@ -988,25 +1073,13 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                 wave_cycle);
   }
 
-  const bool cacheable_current = current_source == "marine_ie_irish_sea" ||
-                                 current_source == "copernicus_nws" ||
-                                 current_source == "copernicus_global" ||
-                                 current_source == "copernicus_ibi" ||
-                                 current_source == "copernicus_mediterranean" ||
-                                 current_source == "noaa_rtofs_global";
-  const std::string current_fingerprint =
-      CurrentFingerprint(request, current_source);
-  bool restored_current = false;
-  if (cacheable_current) {
-    if (const auto cached = resume.Restore("current", current_fingerprint,
-                                           workspace.File("current.grb"))) {
-      streams.emplace_back("current", cached->path);
-      restored_current = true;
-    }
-  }
-
-  if (restored_current) {
-    // The validated checkpoint is already in the workspace and stream list.
+  if (current_future) {
+    const auto generated = current_future->get();
+    streams.emplace_back("current", generated.output);
+    for (const auto& name : generated.diagnostics.getMemberNames())
+      diagnostics[name] = generated.diagnostics[name];
+  } else if (restored_current) {
+    streams.emplace_back("current", workspace.File("current.grb"));
   } else if (current_source == "existing-file") {
     if (!request.current_file)
       throw ValidationError("existing current source requires current-file");
@@ -1077,6 +1150,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   } else if (current_source == "netcdf") {
     if (!request.input_netcdf)
       throw ValidationError("netcdf current source requires input-netcdf");
+    std::lock_guard netcdf_lock(NetcdfApiMutex());
     const auto grid =
         BuildRegularGrid(request.bbox, request.current_grid_spacing_deg);
     const auto times =
@@ -1106,6 +1180,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
             "automatic TPXO cache preparation requires tpxoModelDirectory");
       }
       Report(progress, "preparing TPXO cache", request.input_cache->string());
+      std::lock_guard netcdf_lock(NetcdfApiMutex());
       PrepareTpxo10Cache(*request.tpxo_model_directory, request.bbox,
                          request.current_grid_spacing_deg, *request.input_cache,
                          true);
@@ -1128,6 +1203,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                              workspace.File("current.grb"),
                              request.infer_minor_tides,
                              true};
+    std::lock_guard netcdf_lock(NetcdfApiMutex());
     streams.emplace_back("current",
                          GenerateFromTpxo10AtlasModel(current).output);
   } else if (current_source == "offline-tidal") {
