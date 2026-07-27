@@ -684,25 +684,8 @@ GribWriteSummary WriteRegularLatLonGrib2Chunk(
             field.step_type ? 8 : 0);
     SetLong(handle.get(), "typeOfGeneratingProcess", 2);
     SetLong(handle.get(), "generatingProcessIdentifier", 255);
-    if (field.short_name == "refc") {
-      // Composite reflectivity 0/16/196 is understood by xGRIB but is absent
-      // from some ecCodes centre tables used by the generic sample.
-      SetLong(handle.get(), "parameterCategory", 16);
-      SetLong(handle.get(), "parameterNumber", 196);
-    } else {
+    if (field.short_name != "refc") {
       SetString(handle.get(), "shortName", field.short_name);
-    }
-    // ecCodes' generic sample maps "tp" to a local parameter definition.
-    // xGRIB and WMO GRIB2 use discipline 0/category 1/parameter 8 for total
-    // precipitation, so make that identity explicit for converted sources.
-    if (field.short_name == "tp") {
-      SetLong(handle.get(), "parameterCategory", 1);
-      SetLong(handle.get(), "parameterNumber", 8);
-    } else if (field.short_name == "tcc") {
-      // The generic sample otherwise selects a centre-local cloud parameter
-      // (192), while xGRIB consumes WMO total cloud cover 0/6/1.
-      SetLong(handle.get(), "parameterCategory", 6);
-      SetLong(handle.get(), "parameterNumber", 1);
     }
     if (field.type_of_level)
       SetString(handle.get(), "typeOfLevel", *field.type_of_level);
@@ -742,6 +725,26 @@ GribWriteSummary WriteRegularLatLonGrib2Chunk(
     SetLong(handle.get(), "jScansPositively", 1);
     SetLong(handle.get(), "jPointsAreConsecutive", 0);
     SetLong(handle.get(), "bitsPerValue", 24);
+    // Apply identities after level, interval and template keys.  Older
+    // ecCodes releases may recalculate the parameter when one of those keys
+    // changes, otherwise turning portable WMO fields into "unknown".
+    if (field.short_name == "refc") {
+      // Composite reflectivity 0/16/196 is understood by xGRIB but is absent
+      // from some ecCodes centre tables used by the generic sample.
+      SetLong(handle.get(), "discipline", 0);
+      SetLong(handle.get(), "parameterCategory", 16);
+      SetLong(handle.get(), "parameterNumber", 196);
+    } else if (field.short_name == "tp") {
+      // The generic sample maps "tp" to a centre-local parameter definition.
+      SetLong(handle.get(), "discipline", 0);
+      SetLong(handle.get(), "parameterCategory", 1);
+      SetLong(handle.get(), "parameterNumber", 8);
+    } else if (field.short_name == "tcc") {
+      // xGRIB consumes WMO total cloud cover 0/6/1.
+      SetLong(handle.get(), "discipline", 0);
+      SetLong(handle.get(), "parameterCategory", 6);
+      SetLong(handle.get(), "parameterNumber", 1);
+    }
     std::vector<double> values = field.values;
     bool missing = false;
     for (std::size_t i = 0; i < values.size(); ++i) {

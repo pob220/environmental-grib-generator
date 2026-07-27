@@ -38,27 +38,35 @@ auto ParallelMapOrdered(const std::vector<Input>& inputs,
   std::atomic<bool> failed{false};
   std::exception_ptr failure;
   std::mutex failure_mutex;
-  std::vector<std::jthread> workers;
+  std::vector<std::thread> workers;
   workers.reserve(worker_count);
-  for (std::size_t worker = 0; worker < worker_count; ++worker) {
-    workers.emplace_back([&] {
-      while (!failed.load(std::memory_order_acquire)) {
-        const std::size_t index = next.fetch_add(1);
-        if (index >= inputs.size()) return;
-        try {
-          slots[index].emplace(function(inputs[index]));
-        } catch (...) {
-          {
-            std::lock_guard lock(failure_mutex);
-            if (!failure) failure = std::current_exception();
+  try {
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+      workers.emplace_back([&] {
+        while (!failed.load(std::memory_order_acquire)) {
+          const std::size_t index = next.fetch_add(1);
+          if (index >= inputs.size()) return;
+          try {
+            slots[index].emplace(function(inputs[index]));
+          } catch (...) {
+            {
+              std::lock_guard lock(failure_mutex);
+              if (!failure) failure = std::current_exception();
+            }
+            failed.store(true, std::memory_order_release);
+            return;
           }
-          failed.store(true, std::memory_order_release);
-          return;
         }
-      }
-    });
+      });
+    }
+  } catch (...) {
+    failed.store(true, std::memory_order_release);
+    for (auto& worker : workers)
+      if (worker.joinable()) worker.join();
+    throw;
   }
-  workers.clear();
+  for (auto& worker : workers)
+    if (worker.joinable()) worker.join();
   if (failure) std::rethrow_exception(failure);
   std::vector<Result> results;
   results.reserve(slots.size());

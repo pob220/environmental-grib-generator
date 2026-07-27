@@ -1289,7 +1289,7 @@ int main() {
       metno.message_count == 47 &&
       metno_inspection["short_name_counts"]["10u"].asUInt64() == 6 &&
       metno_inspection["grib2_parameter_counts"]["0:1:8"].asUInt64() == 5 &&
-      metno_inspection["short_name_counts"]["2r"].asUInt64() == 6 &&
+      metno_inspection["grib2_parameter_counts"]["0:1:1"].asUInt64() == 6 &&
       metno_precipitation_interval && metno_partial_temperature &&
       std::stoull(metno.variables_levels.at("partial_field_count")) == 47 &&
       std::stod(metno.variables_levels.at("maximum_missing_percent")) > 0.5 &&

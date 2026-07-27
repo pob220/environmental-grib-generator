@@ -67,6 +67,18 @@ int main() {
     for (std::size_t i = 0; i < mapped.size(); ++i)
       Check(mapped[i] == inputs[i] * inputs[i],
             "ordered map preserves input order");
+    bool map_failure_caught = false;
+    try {
+      (void)eg::ParallelMapOrdered(inputs, 4, [](const int& input) {
+        if (input == 3) throw std::runtime_error("expected worker failure");
+        return input;
+      });
+    } catch (const std::runtime_error& error) {
+      map_failure_caught =
+          std::string(error.what()) == "expected worker failure";
+    }
+    Check(map_failure_caught,
+          "ordered map joins workers and propagates worker failure");
 
     const auto root = std::filesystem::temp_directory_path();
     const auto token = std::to_string(
