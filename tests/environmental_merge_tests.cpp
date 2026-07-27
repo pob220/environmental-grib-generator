@@ -84,6 +84,9 @@ int main(int argc, char** argv) {
   const auto combined = root / "combined-known.grb2";
   const auto all_weather = root / "all-weather-known.grb2";
   const auto combined_all = root / "combined-all-known.grb2";
+  const auto long_weather = root / "long-weather-known.grb2";
+  const auto long_current = root / "long-current-known.grb";
+  const auto combined_long = root / "combined-long-known.grb2";
 
   const std::vector<eg::Grib2Field> wind_fields{
       {0, "10u", {1, 2, 3, 4, 5, 6}, {}},
@@ -114,6 +117,12 @@ int main(int argc, char** argv) {
       {3, "tp", values(2.5), {}, "surface", 0.0, "accum", 3},
   };
   eg::WriteRegularLatLonGrib2(grid, start, all_weather_fields, all_weather);
+  eg::WriteRegularLatLonGrib2(grid, start,
+                              {{0, "10u", values(4.0), {}},
+                               {0, "10v", values(-2.0), {}},
+                               {360, "10u", values(6.0), {}},
+                               {360, "10v", values(-4.0), {}}},
+                              long_weather);
   eg::WriteGrib1Currents({Current(grid, start, 0.0),
                           Current(grid, start + std::chrono::hours(3), 1.0)},
                          current_matching);
@@ -121,6 +130,11 @@ int main(int argc, char** argv) {
                           Current(grid, start + std::chrono::hours(3), 1.0),
                           Current(grid, start + std::chrono::hours(6), 2.0)},
                          current_differing);
+  eg::WriteGrib1Currents({Current(grid, start, 0.0),
+                          Current(grid, start + std::chrono::hours(255), 1.0),
+                          Current(grid, start + std::chrono::hours(256), 2.0),
+                          Current(grid, start + std::chrono::hours(360), 3.0)},
+                         long_current);
 
   eg::EnvironmentalMergeRequest request;
   request.weather = wind;
@@ -208,6 +222,25 @@ int main(int argc, char** argv) {
                     .asUInt64() == 3,
         "combined all-data fixture retains both current components");
 
+  eg::EnvironmentalMergeRequest long_request;
+  long_request.weather = long_weather;
+  long_request.current = long_current;
+  long_request.output = combined_long;
+  long_request.overwrite = true;
+  const auto long_result = eg::MergeEnvironmentalGribs(long_request);
+  Check(long_result.success && long_result.output_message_count == 12 &&
+            long_result.output_inspection["valid_times"].size() == 4 &&
+            long_result.output_inspection["first_valid_time"].asString() ==
+                "20260712T0000" &&
+            long_result.output_inspection["last_valid_time"].asString() ==
+                "20260727T0000" &&
+            long_result.output_inspection["current_component_counts"]["u_49"]
+                    .asUInt64() == 4 &&
+            long_result.output_inspection["current_component_counts"]["v_50"]
+                    .asUInt64() == 4,
+        "combined weather/current output preserves 255, 256 and 360-hour "
+        "current leads");
+
   eg::EnvironmentalMergeRequest matching_request = request;
   matching_request.current = current_matching;
   matching_request.output = root / "combined-matching.grb2";
@@ -291,6 +324,9 @@ int main(int argc, char** argv) {
   manifest["fixtures"]["corrupt"] = corrupt.filename().string();
   manifest["fixtures"]["combined"] = combined.filename().string();
   manifest["fixtures"]["combined_all"] = combined_all.filename().string();
+  manifest["fixtures"]["long_weather"] = long_weather.filename().string();
+  manifest["fixtures"]["long_current"] = long_current.filename().string();
+  manifest["fixtures"]["combined_long"] = combined_long.filename().string();
   WriteJson(root / "fixture-manifest.json", manifest);
   WriteJson(root / "merge-result.json",
             eg::EnvironmentalMergeResultJson(result));

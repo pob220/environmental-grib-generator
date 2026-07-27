@@ -448,6 +448,16 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
       message["start_step"] = Json::Int64(*start_step);
     if (const auto end_step = GetLong(handle.get(), "endStep"))
       message["end_step"] = Json::Int64(*end_step);
+    if (message.get("edition", 0).asInt64() == 1) {
+      if (const auto unit = GetLong(handle.get(), "indicatorOfUnitOfTimeRange"))
+        message["time_unit"] = Json::Int64(*unit);
+      if (const auto range = GetLong(handle.get(), "timeRangeIndicator"))
+        message["time_range_indicator"] = Json::Int64(*range);
+      if (const auto p1 = GetLong(handle.get(), "P1"))
+        message["p1"] = Json::Int64(*p1);
+      if (const auto p2 = GetLong(handle.get(), "P2"))
+        message["p2"] = Json::Int64(*p2);
+    }
     if (const auto packing = GetString(handle.get(), "packingType"))
       message["packing_type"] = *packing;
 
@@ -556,21 +566,53 @@ GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
   if (grids.empty())
     throw ValidationError("no current grids were provided for GRIB writing");
   for (const auto& grid : grids) grid.Validate();
+  // GRIB1 reference times have minute precision. Current generators produce
+  // whole-hour offsets from the requested start, so retaining the start minute
+  // avoids silently shifting a request such as 12:37 to 12:00.
+  const TimePoint reference =
+      std::chrono::floor<std::chrono::minutes>(grids.front().time);
+  if (grids.front().time != reference)
+    throw ValidationError(
+        "GRIB1 current reference time must have whole-minute precision");
+  struct EncodedLead {
+    long p1{};
+    long p2{};
+    long time_range_indicator{};
+  };
+  std::vector<EncodedLead> leads;
+  leads.reserve(grids.size());
+  for (const auto& current : grids) {
+    const auto offset = current.time - reference;
+    const auto forecast_hours =
+        std::chrono::duration_cast<std::chrono::hours>(offset);
+    if (offset != forecast_hours)
+      throw ValidationError(
+          "GRIB1 current valid times must use whole-hour offsets");
+    if (forecast_hours.count() < 0)
+      throw ValidationError(
+          "current grids must not be earlier than the GRIB reference time");
+    if (forecast_hours.count() <= 255) {
+      leads.push_back({static_cast<long>(forecast_hours.count()), 0, 0});
+    } else if (forecast_hours.count() <= 65535) {
+      // GRIB1 time range indicator 10 defines octets 19 and 20 as one
+      // unsigned 16-bit P1 forecast lead. xGRIB's GRIB1 reader supports this
+      // standard representation.
+      leads.push_back({static_cast<long>((forecast_hours.count() >> 8) & 0xff),
+                       static_cast<long>(forecast_hours.count() & 0xff), 10});
+    } else {
+      throw ValidationError("GRIB1 current forecast lead exceeds 65535 hours");
+    }
+  }
   std::filesystem::create_directories(
       output.parent_path().empty() ? "." : output.parent_path());
   std::ofstream stream(output, std::ios::binary | std::ios::trunc);
   if (!stream)
-    throw ValidationError("unable to create GRIB output: " + PathToUtf8(output));
-  const TimePoint reference =
-      std::chrono::floor<std::chrono::hours>(grids.front().time);
+    throw ValidationError("unable to create GRIB output: " +
+                          PathToUtf8(output));
   std::size_t count = 0;
-  for (const auto& current : grids) {
-    const auto forecast_hours =
-        std::chrono::duration_cast<std::chrono::hours>(current.time - reference)
-            .count();
-    if (forecast_hours < 0)
-      throw ValidationError(
-          "current grids must not be earlier than the GRIB reference time");
+  for (std::size_t grid_index = 0; grid_index < grids.size(); ++grid_index) {
+    const auto& current = grids[grid_index];
+    const auto& lead = leads[grid_index];
     const auto epoch = reference.time_since_epoch().count();
     std::time_t raw_time = static_cast<std::time_t>(epoch);
     const std::tm tm = UtcTime(raw_time);
@@ -592,9 +634,11 @@ GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
               (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday);
       SetLong(handle.get(), "dataTime", tm.tm_hour * 100 + tm.tm_min);
       SetLong(handle.get(), "indicatorOfUnitOfTimeRange", 1);
-      SetLong(handle.get(), "P1", static_cast<long>(forecast_hours));
-      SetLong(handle.get(), "P2", 0);
-      SetLong(handle.get(), "timeRangeIndicator", 0);
+      // Set the interpretation before its octets. Older ecCodes releases can
+      // otherwise apply the previous template's key constraints.
+      SetLong(handle.get(), "timeRangeIndicator", lead.time_range_indicator);
+      SetLong(handle.get(), "P1", lead.p1);
+      SetLong(handle.get(), "P2", lead.p2);
       SetLong(handle.get(), "Ni", static_cast<long>(current.grid.nx()));
       SetLong(handle.get(), "Nj", static_cast<long>(current.grid.ny()));
       SetDouble(handle.get(), "latitudeOfFirstGridPointInDegrees",

@@ -306,8 +306,46 @@ void TestEnvironmentGeneration() {
   Check(inspection["current_component_counts"]["v_50"].asUInt64() == 4,
         "Offline Tidal writes four northward current messages");
 
+  const auto long_output = std::filesystem::temp_directory_path() /
+                           "environmental-grib-offline-tidal-360h.grb";
+  eg::EnvironmentRequest long_request = request;
+  long_request.hours = 360;
+  long_request.output = long_output;
+  const auto long_result = eg::GenerateEnvironment(long_request);
+  Check(long_result.message_count == 722 &&
+            long_result.inspection["valid_times"].size() == 361 &&
+            long_result.inspection["first_valid_time"].asString() ==
+                "20260713T0000" &&
+            long_result.inspection["last_valid_time"].asString() ==
+                "20260728T0000",
+        "360-hour Offline current generation encodes every hourly timestamp");
+
+  const auto extended_output = std::filesystem::temp_directory_path() /
+                               "environmental-grib-current-extension-360h.grb";
+  eg::EnvironmentRequest extended_request = request;
+  extended_request.hours = 360;
+  extended_request.current_source = "existing-file";
+  extended_request.current_file = output;
+  extended_request.extend_forecast = true;
+  extended_request.fallback_current_source = "offline-tidal";
+  extended_request.output = extended_output;
+  const auto extended_result = eg::GenerateEnvironment(extended_request);
+  const auto extended_coverage =
+      extended_result.diagnostics["forecast_extension"]["coverage"]["current"];
+  Check(extended_result.message_count == 722 &&
+            extended_result.inspection["valid_times"].size() == 361 &&
+            extended_result.inspection["last_valid_time"].asString() ==
+                "20260728T0000" &&
+            extended_coverage.size() == 2 &&
+            extended_coverage[0]["through_hour"].asInt() == 3 &&
+            extended_coverage[1]["through_hour"].asInt() == 360,
+        "current extension retains a preferred prefix and fills its "
+        "contiguous long-range tail");
+
   RemoveTestFile(package);
   RemoveTestFile(output);
+  RemoveTestFile(long_output);
+  RemoveTestFile(extended_output);
 
   const auto v2_package = TempPath("environment-v2");
   const auto v2_output = std::filesystem::temp_directory_path() /

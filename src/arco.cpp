@@ -354,6 +354,29 @@ ArcoDataset DiscoverArcoDataset(const std::string& product,
   throw ValidationError(message.str());
 }
 
+std::vector<TimePoint> SelectUsableArcoTimePrefix(
+    const ArcoDataset& dataset, const std::string& variable,
+    const std::vector<TimePoint>& requested_times) {
+  const auto& asset = dataset.item["assets"]["timeChunked"];
+  const Axis time = AxisFor(asset, variable, "time");
+  std::vector<TimePoint> result;
+  result.reserve(requested_times.size());
+  constexpr double kIndexEpsilon = 1e-6;
+  for (const auto instant : requested_times) {
+    const auto milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            instant.time_since_epoch())
+            .count();
+    const double raw_index = (milliseconds - time.minimum) / time.step;
+    const auto index = static_cast<long long>(std::llround(raw_index));
+    if (index < 0 || static_cast<std::size_t>(index) >= time.size ||
+        std::abs(raw_index - index) > 0.5 + kIndexEpsilon)
+      break;
+    result.push_back(instant);
+  }
+  return result;
+}
+
 std::map<std::string, std::vector<NetCDFScalarField>> ReadArcoFields(
     const ArcoDataset& dataset, const std::vector<std::string>& variables,
     const BoundingBox& bbox, const std::vector<TimePoint>& times,

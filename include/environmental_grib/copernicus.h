@@ -24,6 +24,10 @@ struct CopernicusRequest {
   std::filesystem::path output;
   bool overwrite{false};
   bool dry_run{false};
+  // Internal extension-mode option. Direct provider requests remain strict;
+  // an orchestrated preferred source may retain its contiguous available
+  // prefix when a fallback is configured to cover the remaining window.
+  bool allow_partial_time_coverage{false};
   double timeout_seconds{120.0};
 };
 

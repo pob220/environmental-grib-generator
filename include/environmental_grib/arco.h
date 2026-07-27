@@ -26,6 +26,11 @@ ArcoDataset DiscoverArcoDataset(const std::string& product_id,
                                 BinaryDownload download,
                                 double timeout_seconds = 120.0);
 
+/** Return the contiguous requested prefix present on an ARCO time axis. */
+std::vector<TimePoint> SelectUsableArcoTimePrefix(
+    const ArcoDataset& dataset, const std::string& variable,
+    const std::vector<TimePoint>& requested_times);
+
 std::map<std::string, std::vector<NetCDFScalarField>> ReadArcoFields(
     const ArcoDataset& dataset, const std::vector<std::string>& variables,
     const BoundingBox& bbox, const std::vector<TimePoint>& times,

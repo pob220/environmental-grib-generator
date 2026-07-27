@@ -456,9 +456,12 @@ std::vector<unsigned char> BloscFloat(const std::vector<float>& input) {
 }
 
 std::filesystem::path Temp(const std::string& name) {
+  static const std::string run_id =
+      std::to_string(eg::ProcessId()) + "-" +
+      std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count());
   return std::filesystem::temp_directory_path() /
-         ("environmental-grib-tests-" + std::to_string(eg::ProcessId()) + "-" +
-          name);
+         ("environmental-grib-tests-" + run_id + "-" + name);
 }
 }  // namespace
 
@@ -785,6 +788,61 @@ int main() {
   Check(inspection["current_component_counts"]["u_49"].asUInt64() == 1 &&
             inspection["current_component_counts"]["v_50"].asUInt64() == 1,
         "ecCodes current parameters");
+  const auto minute_start = eg::ParseUtcDateTime("2026-07-01T00:37:00Z");
+  std::vector<eg::CurrentGrid> long_lead_currents;
+  for (const int hour : {0, 255, 256, 360}) {
+    auto current = constant;
+    current.time = minute_start + std::chrono::hours(hour);
+    long_lead_currents.push_back(std::move(current));
+  }
+  const auto long_current_path = Temp("long-current.grb");
+  eg::WriteGrib1Currents(long_lead_currents, long_current_path);
+  const auto long_inspection = eg::InspectGrib(long_current_path);
+  const auto find_current_message =
+      [&](const std::string& valid_time) -> const Json::Value* {
+    for (const auto& encoded : long_inspection["messages"])
+      if (encoded.get("parameter_number", 0).asInt64() == 49 &&
+          encoded.get("valid_time", "").asString() == valid_time)
+        return &encoded;
+    return nullptr;
+  };
+  const auto* hour_255 = find_current_message("20260711T1537");
+  const auto* hour_256 = find_current_message("20260711T1637");
+  const auto* hour_360 = find_current_message("20260716T0037");
+  Check(long_inspection["message_count"].asUInt64() == 8 &&
+            long_inspection["valid_times"].size() == 4 &&
+            long_inspection["first_valid_time"].asString() == "20260701T0037" &&
+            long_inspection["last_valid_time"].asString() == "20260716T0037",
+        "GRIB1 current writer preserves minute-aligned 15-day valid times");
+  Check(hour_255 && (*hour_255)["time_range_indicator"].asInt64() == 0 &&
+            (*hour_255)["p1"].asInt64() == 255 &&
+            (*hour_255)["p2"].asInt64() == 0,
+        "GRIB1 current hour 255 uses the one-octet lead");
+  Check(hour_256 && (*hour_256)["time_range_indicator"].asInt64() == 10 &&
+            (*hour_256)["p1"].asInt64() == 1 &&
+            (*hour_256)["p2"].asInt64() == 0 && hour_360 &&
+            (*hour_360)["time_range_indicator"].asInt64() == 10 &&
+            (*hour_360)["p1"].asInt64() == 1 &&
+            (*hour_360)["p2"].asInt64() == 104,
+        "GRIB1 current long leads use the standard two-octet encoding");
+  auto maximum_lead = constant;
+  maximum_lead.time = start + std::chrono::hours(65535);
+  const auto maximum_lead_path = Temp("maximum-current-lead.grb");
+  eg::WriteGrib1Currents({constant, maximum_lead}, maximum_lead_path);
+  Check(eg::InspectGrib(maximum_lead_path)["last_valid_time"].asString() ==
+            "20331221T1500",
+        "GRIB1 current writer accepts the complete unsigned 16-bit range");
+  auto excessive_lead = constant;
+  excessive_lead.time = start + std::chrono::hours(65536);
+  const auto excessive_lead_path = Temp("excessive-current-lead.grb");
+  std::filesystem::remove(excessive_lead_path);
+  ExpectValidation(
+      [&] {
+        eg::WriteGrib1Currents({constant, excessive_lead}, excessive_lead_path);
+      },
+      "GRIB1 current writer rejects leads beyond 65535 hours");
+  Check(!std::filesystem::exists(excessive_lead_path),
+        "unrepresentable current lead is rejected before output creation");
   auto masked_current = constant;
   masked_current.mask.assign(grid.size(), 0);
   masked_current.mask.front() = 1;
@@ -1101,6 +1159,68 @@ int main() {
           eg::InspectGrib(copernicus_output)["current_component_counts"]["v_50"]
                   .asUInt64() == 1,
       "Copernicus dynamic STAC and Blosc Zarr conversion");
+  const auto copernicus_partial_output = Temp("copernicus-partial.grb");
+  eg::CopernicusRequest copernicus_partial_request = copernicus_request;
+  copernicus_partial_request.hours = 2;
+  copernicus_partial_request.allow_partial_time_coverage = true;
+  copernicus_partial_request.output = copernicus_partial_output;
+  const std::string copernicus_partial_item =
+      std::string(
+          R"({"id":"cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i_202607","assets":{"timeChunked":{"href":"https://test.invalid/nws.zarr","viewDims":{"latitude":{"coords":{"min":52.0,"max":53.0,"step":0.5,"len":3}},"longitude":{"coords":{"min":-7.0,"max":-6.0,"step":0.5,"len":3}},"time":{"coords":{"min":)") +
+      std::to_string(epoch_ms) + R"(,"max":)" +
+      std::to_string(epoch_ms + 3600000) +
+      R"(,"step":3600000,"len":2}}}}},"properties":{"cube:variables":{"uo":{"scale":0.001,"offset":0.0,"missingValue":-32768},"vo":{"scale":0.001,"offset":0.0,"missingValue":-32768}}}})";
+  const auto copernicus_partial = eg::GenerateCopernicusNws(
+      copernicus_partial_request,
+      [&](const std::string& url, double) {
+        if (url.find("product.stac.json") != std::string::npos)
+          return std::vector<unsigned char>(copernicus_product.begin(),
+                                            copernicus_product.end());
+        if (url.find("dataset.stac.json") != std::string::npos)
+          return std::vector<unsigned char>(copernicus_partial_item.begin(),
+                                            copernicus_partial_item.end());
+        if (url.find("/uo/0.0.0") != std::string::npos ||
+            url.find("/uo/1.0.0") != std::string::npos)
+          return u_chunk;
+        if (url.find("/vo/0.0.0") != std::string::npos ||
+            url.find("/vo/1.0.0") != std::string::npos)
+          return v_chunk;
+        throw std::runtime_error("unexpected partial NWS URL: " + url);
+      },
+      [](const std::string&, const std::string&, double) { return true; });
+  Check(
+      copernicus_partial.message_count == 4 &&
+          copernicus_partial.summary["requested_time_count"].asUInt64() == 3 &&
+          copernicus_partial.summary["time_count"].asUInt64() == 2 &&
+          copernicus_partial.summary["partial_time_coverage"].asBool() &&
+          eg::InspectGrib(copernicus_partial_output)["last_valid_time"]
+                  .asString() == "20260701T0100",
+      "Copernicus NWS extension mode retains its contiguous available "
+      "prefix");
+  eg::CopernicusRequest copernicus_strict_request = copernicus_partial_request;
+  copernicus_strict_request.allow_partial_time_coverage = false;
+  copernicus_strict_request.output = Temp("copernicus-strict-range.grb");
+  ExpectValidation(
+      [&] {
+        eg::GenerateCopernicusNws(
+            copernicus_strict_request,
+            [&](const std::string& url, double) {
+              if (url.find("product.stac.json") != std::string::npos)
+                return std::vector<unsigned char>(copernicus_product.begin(),
+                                                  copernicus_product.end());
+              if (url.find("dataset.stac.json") != std::string::npos)
+                return std::vector<unsigned char>(
+                    copernicus_partial_item.begin(),
+                    copernicus_partial_item.end());
+              if (url.find("/uo/") != std::string::npos) return u_chunk;
+              if (url.find("/vo/") != std::string::npos) return v_chunk;
+              throw std::runtime_error("unexpected strict NWS URL: " + url);
+            },
+            [](const std::string&, const std::string&, double) {
+              return true;
+            });
+      },
+      "direct Copernicus NWS requests retain strict time coverage");
   const auto global_current_output = Temp("copernicus-global.grb");
   eg::CopernicusRequest global_request = copernicus_request;
   global_request.provider = "copernicus_global";
@@ -1135,6 +1255,30 @@ int main() {
                 global_current_output)["current_component_counts"]["u_49"]
                     .asUInt64() == 1,
         "Copernicus Global float32 four-dimensional ARCO conversion");
+  eg::CopernicusRequest global_partial_request = global_request;
+  global_partial_request.hours = 1;
+  global_partial_request.allow_partial_time_coverage = true;
+  global_partial_request.output = Temp("copernicus-global-partial.grb");
+  const auto global_partial = eg::GenerateCopernicusGlobal(
+      global_partial_request,
+      [&](const std::string& url, double) {
+        if (url.find("product.stac.json") != std::string::npos)
+          return std::vector<unsigned char>(global_product.begin(),
+                                            global_product.end());
+        if (url.find("dataset.stac.json") != std::string::npos)
+          return std::vector<unsigned char>(global_item.begin(),
+                                            global_item.end());
+        if (url.find("/uo/0.0.0.0") != std::string::npos) return global_u;
+        if (url.find("/vo/0.0.0.0") != std::string::npos) return global_v;
+        throw std::runtime_error("unexpected partial Global URL: " + url);
+      },
+      [](const std::string&, const std::string&, double) { return true; });
+  Check(global_partial.message_count == 2 &&
+            global_partial.summary["requested_time_count"].asUInt64() == 2 &&
+            global_partial.summary["time_count"].asUInt64() == 1 &&
+            global_partial.summary["partial_time_coverage"].asBool(),
+        "shared Copernicus ARCO path retains an available prefix only when "
+        "extension mode permits it");
   const auto ibi_current_output = Temp("copernicus-ibi.grb");
   eg::CopernicusRequest ibi_request = global_request;
   ibi_request.provider = "copernicus_ibi";
@@ -1520,6 +1664,22 @@ int main() {
             planned_weather[1]["through_hour"].asInt() == 360 &&
             planned_weather[1]["model_lead_hours_requested"].asInt() == 384,
         "15-day extension pads GFS model leads while targeting hour 360");
+  eg::EnvironmentRequest nws_extension_plan = extension_plan;
+  nws_extension_plan.weather_provider = "none";
+  nws_extension_plan.fallback_weather_provider = "none";
+  nws_extension_plan.current_source = "copernicus_nws";
+  nws_extension_plan.fallback_current_source = "offline-tidal";
+  nws_extension_plan.output = Temp("nws-extension-plan.grb");
+  const auto planned_currents =
+      eg::GenerateEnvironment(nws_extension_plan)
+          .diagnostics["forecast_extension"]["coverage"]["current"];
+  Check(planned_currents.size() == 2 &&
+            planned_currents[0]["source"].asString() == "copernicus_nws" &&
+            planned_currents[0]["through_hour"].asInt() == 168 &&
+            planned_currents[1]["source"].asString() == "offline-tidal" &&
+            planned_currents[1]["through_hour"].asInt() == 360,
+        "15-day current extension uses the published seven-day NWS horizon "
+        "and an offline tail");
 
   eg::EnvironmentRequest short_cycle_plan = extension_plan;
   short_cycle_plan.hours = 72;

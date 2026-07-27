@@ -164,6 +164,25 @@ Axis ReadAxis(const Json::Value& asset, const char* name) {
   return result;
 }
 
+std::vector<TimePoint> SelectNwsTimePrefix(
+    const Axis& time, const std::vector<TimePoint>& requested_times) {
+  std::vector<TimePoint> result;
+  result.reserve(requested_times.size());
+  for (const auto instant : requested_times) {
+    const auto milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            instant.time_since_epoch())
+            .count();
+    const double raw_index = (milliseconds - time.minimum) / time.step;
+    const auto index = static_cast<long long>(std::llround(raw_index));
+    if (index < 0 || static_cast<std::size_t>(index) >= time.size ||
+        std::abs(raw_index - index) > 1e-6)
+      break;
+    result.push_back(instant);
+  }
+  return result;
+}
+
 std::vector<std::int16_t> DecodeInt16Blosc(
     const std::vector<unsigned char>& compressed, std::size_t expected_values) {
   if (compressed.empty())
@@ -282,8 +301,20 @@ CopernicusResult GenerateCopernicusNws(
   result.summary["metadata_root"] = dataset.metadata_root;
   result.summary["service"] = "Copernicus Marine ARCO time-chunked Zarr v2";
   if (request.dry_run) return result;
-  const auto requested_times =
+  const auto all_requested_times =
       BuildTimeSequence(request.start, request.hours, request.step_hours);
+  const auto requested_times =
+      request.allow_partial_time_coverage
+          ? SelectNwsTimePrefix(time, all_requested_times)
+          : all_requested_times;
+  if (requested_times.empty())
+    throw ValidationError(
+        "requested start time is unavailable in Copernicus NWS dataset");
+  result.summary["requested_time_count"] =
+      Json::UInt64(all_requested_times.size());
+  result.summary["time_count"] = Json::UInt64(requested_times.size());
+  result.summary["partial_time_coverage"] =
+      requested_times.size() != all_requested_times.size();
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   const auto& variable_meta = item["properties"]["cube:variables"];
   auto currents =
@@ -388,8 +419,19 @@ CopernicusResult GenerateCopernicusArcoCurrent(
   result.summary["service"] =
       "Copernicus Marine ARCO spatially chunked time-series";
   if (request.dry_run) return result;
-  const auto times =
+  const auto requested_times =
       BuildTimeSequence(request.start, request.hours, request.step_hours);
+  const auto times =
+      request.allow_partial_time_coverage
+          ? SelectUsableArcoTimePrefix(dataset, "uo", requested_times)
+          : requested_times;
+  if (times.empty())
+    throw ValidationError("requested start time is unavailable in " +
+                          provider_label + " dataset");
+  result.summary["requested_time_count"] = Json::UInt64(requested_times.size());
+  result.summary["time_count"] = Json::UInt64(times.size());
+  result.summary["partial_time_coverage"] =
+      times.size() != requested_times.size();
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   const auto fields =
       ReadArcoFields(dataset, {"uo", "vo"}, request.bbox, times, grid,

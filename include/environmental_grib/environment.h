@@ -51,6 +51,9 @@ struct EnvironmentRequest {
   bool dry_run{false};
   // Internal orchestration switch used by single-component child jobs.
   bool parallel_components{true};
+  // Internal extension-mode switch propagated only to a preferred current
+  // source which has a configured fallback.
+  bool allow_partial_current_coverage{false};
 };
 
 struct EnvironmentResult {

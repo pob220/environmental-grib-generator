@@ -347,8 +347,9 @@ int WaveHorizon(const std::string& provider, int requested) {
 int CurrentHorizon(const std::string& source, int requested) {
   if (source == "marine_ie_irish_sea") return std::min(requested, 72);
   if (source == "noaa_rtofs_global") return std::min(requested, 192);
-  if (source == "copernicus_nws" || source == "copernicus_global" ||
-      source == "copernicus_ibi" || source == "copernicus_mediterranean")
+  if (source == "copernicus_nws") return std::min(requested, 168);
+  if (source == "copernicus_global" || source == "copernicus_ibi" ||
+      source == "copernicus_mediterranean")
     return std::min(requested, 240);
   return requested;
 }
@@ -370,6 +371,7 @@ struct ComponentRun {
   bool complete{false};
   std::optional<TimePoint> first_valid;
   std::optional<TimePoint> last_valid;
+  std::size_t valid_time_count{};
 };
 
 bool CoversRequestedWindow(const ComponentRun& run,
@@ -450,7 +452,8 @@ EnvironmentResult GenerateExtendedEnvironment(const EnvironmentRequest& request,
         selected_cycle = result.selected_cycle;
       ComponentRun completed{
           true, InspectionTime(result.inspection, "first_valid_time"),
-          InspectionTime(result.inspection, "last_valid_time")};
+          InspectionTime(result.inspection, "last_valid_time"),
+          result.inspection["valid_times"].size()};
       AddCoverage(coverage, component, role, source,
                   ThroughHour(completed, request, through_hour), "complete");
       Json::Value& item = coverage[component][coverage[component].size() - 1];
@@ -580,6 +583,7 @@ EnvironmentResult GenerateExtendedEnvironment(const EnvironmentRequest& request,
     const bool have_fallback =
         request.fallback_current_source != "none" &&
         request.fallback_current_source != request.current_source;
+    primary.allow_partial_current_coverage = have_fallback;
     const ComponentRun primary_result =
         run("current-preferred", primary, "current", "preferred",
             request.current_source, primary_hours, have_fallback);
@@ -591,15 +595,57 @@ EnvironmentResult GenerateExtendedEnvironment(const EnvironmentRequest& request,
       auto fallback = SingleComponentRequest(
           request, workspace.File("extended-current-fallback.grb"));
       fallback.current_source = request.fallback_current_source;
+      fallback.allow_partial_current_coverage = false;
       fallback.hours = fallback_hours;
       fallback.step_hours = primary_step;
+      if (primary_result.complete && primary_result.first_valid &&
+          primary_result.last_valid &&
+          *primary_result.first_valid <= request.start &&
+          *primary_result.last_valid > request.start &&
+          *primary_result.last_valid <
+              request.start + std::chrono::hours(request.hours)) {
+        const auto primary_span =
+            std::chrono::duration_cast<std::chrono::hours>(
+                *primary_result.last_valid - *primary_result.first_valid)
+                .count();
+        const auto tail_hours =
+            std::chrono::duration_cast<std::chrono::hours>(
+                request.start + std::chrono::hours(request.hours) -
+                *primary_result.last_valid)
+                .count();
+        const bool primary_is_contiguous =
+            primary_span >= 0 && primary_span % primary_step == 0 &&
+            primary_result.valid_time_count ==
+                static_cast<std::size_t>(primary_span / primary_step + 1);
+        if (primary_is_contiguous && tail_hours >= 0 &&
+            tail_hours % primary_step == 0) {
+          fallback.start = *primary_result.last_valid;
+          fallback.hours = static_cast<int>(tail_hours);
+        }
+      }
       const ComponentRun fallback_result =
           run("current-fallback", fallback, "current", "fallback",
               request.fallback_current_source, request.hours, false);
-      if (!request.dry_run && !CoversRequestedWindow(fallback_result, request))
-        throw ValidationError(
-            "selected current fallback does not cover the requested UTC "
-            "window");
+      if (!request.dry_run) {
+        const bool primary_covers_start =
+            primary_result.complete && primary_result.first_valid &&
+            primary_result.last_valid &&
+            *primary_result.first_valid <= request.start;
+        const bool fallback_reaches_end =
+            fallback_result.complete && fallback_result.first_valid &&
+            fallback_result.last_valid &&
+            *fallback_result.last_valid >=
+                request.start + std::chrono::hours(request.hours);
+        const bool coverage_is_contiguous =
+            fallback_result.first_valid &&
+            (primary_covers_start
+                 ? *fallback_result.first_valid <= *primary_result.last_valid
+                 : *fallback_result.first_valid <= request.start);
+        if (!fallback_reaches_end || !coverage_is_contiguous)
+          throw ValidationError(
+              "selected current fallback does not cover the requested UTC "
+              "window");
+      }
     } else if (currents_need_fallback) {
       throw ValidationError(
           "preferred current source does not cover the requested UTC window "
@@ -1133,6 +1179,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     current.output = workspace.File("current.grb");
     current.overwrite = true;
     current.provider = current_source;
+    current.allow_partial_time_coverage =
+        request.allow_partial_current_coverage;
     const std::string provider =
         current_source == "copernicus_global" ? "Copernicus Global current"
         : current_source == "copernicus_ibi"  ? "Copernicus IBI current"
