@@ -37,6 +37,15 @@ struct Grib2Field {
   std::string short_name;
   std::vector<double> values;
   std::vector<std::uint8_t> mask;
+  // Leave these unset to retain the level implied by the ecCodes short name
+  // (for example 10u and 2t).  NetCDF-backed providers use them for fields
+  // such as pressure-level wind and 2 m relative humidity.
+  std::optional<std::string> type_of_level;
+  std::optional<double> level;
+  // Interval fields are valid at forecast_hour and cover the preceding
+  // interval_hours. Supported step types include "accum" and "max".
+  std::optional<std::string> step_type;
+  int interval_hours{};
 };
 
 struct MergeStreamsResult {
@@ -85,6 +94,15 @@ GribScanResult ScanGribMessages(const std::filesystem::path& path);
 GribScanResult ScanGribBytes(std::span<const unsigned char> data);
 GribNormalizeResult NormalizeGribStream(const std::filesystem::path& input,
                                         const std::filesystem::path& output);
+/** Decode GRIB2 messages with ecCodes and repack them using simple packing.
+ *
+ * This normalises provider-specific encodings such as ECMWF CCSDS/AEC
+ * (template 5.42) into a representation supported by xGRIB's in-process
+ * reader while preserving the meteorological metadata.
+ */
+GribWriteSummary RepackGrib2ToSimplePacking(
+    const std::filesystem::path& input,
+    const std::filesystem::path& output);
 Json::Value InspectGrib(const std::filesystem::path& path);
 GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
                                     const std::filesystem::path& output);

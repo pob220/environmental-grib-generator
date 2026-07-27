@@ -51,6 +51,20 @@ const std::map<std::string, std::string> kMarineFields{
     {"var_APCP", "on"},
     {"lev_surface", "on"},
     {"lev_entire_atmosphere", "on"}};
+const std::map<std::string, std::string> kAllDisplayableFields{
+    {"var_GUST", "on"},
+    {"var_TCDC", "on"},
+    {"var_APCP", "on"},
+    {"var_CAPE", "on"},
+    {"var_REFC", "on"},
+    {"var_RH", "on"},
+    {"var_HGT", "on"},
+    {"lev_surface", "on"},
+    {"lev_entire_atmosphere", "on"},
+    {"lev_850_mb", "on"},
+    {"lev_700_mb", "on"},
+    {"lev_500_mb", "on"},
+    {"lev_300_mb", "on"}};
 const std::map<std::string, std::string> kWaveFields{{"var_HTSGW", "on"},
                                                      {"var_PERPW", "on"},
                                                      {"var_DIRPW", "on"},
@@ -59,6 +73,15 @@ const std::map<std::string, std::string> kDwdRoutingFields{
     {"10u", "u_10m"}, {"10v", "v_10m"}, {"prmsl", "pmsl"}, {"2t", "t_2m"}};
 const std::map<std::string, std::string> kDwdMinimalFields{{"10u", "u_10m"},
                                                            {"10v", "v_10m"}};
+const std::map<std::string, std::string> kDwdMarineFields{
+    {"10u", "u_10m"},   {"10v", "v_10m"}, {"prmsl", "pmsl"},
+    {"2t", "t_2m"},     {"10fg", "vmax_10m"},
+    {"tp", "tot_prec"}, {"tcc", "clct"}};
+const std::map<std::string, std::string> kDwdAllDisplayableFields{
+    {"10u", "u_10m"},       {"10v", "v_10m"},   {"prmsl", "pmsl"},
+    {"2t", "t_2m"},         {"10fg", "vmax_10m"},
+    {"tp", "tot_prec"},     {"tcc", "clct"},     {"cape", "cape_ml"},
+    {"2r", "relhum_2m"}};
 const std::map<std::string, std::string> kHrrrRoutingFields{
     {"var_UGRD", "on"},
     {"var_VGRD", "on"},
@@ -70,7 +93,31 @@ const std::map<std::string, std::string> kHrrrRoutingFields{
 const std::map<std::string, std::string> kHrrrMinimalFields{
     {"var_UGRD", "on"}, {"var_VGRD", "on"}, {"lev_10_m_above_ground", "on"}};
 const std::map<std::string, std::string> kHrrrMarineFields{
-    {"var_GUST", "on"}, {"lev_surface", "on"}};
+    {"var_GUST", "on"},
+    {"var_APCP", "on"},
+    {"var_TCDC", "on"},
+    {"lev_surface", "on"},
+    {"lev_entire_atmosphere", "on"}};
+const std::map<std::string, std::string> kHrrrAllDisplayableFields{
+    {"var_UGRD", "on"},
+    {"var_VGRD", "on"},
+    {"var_PRES", "on"},
+    {"var_TMP", "on"},
+    {"var_GUST", "on"},
+    {"var_APCP", "on"},
+    {"var_TCDC", "on"},
+    {"var_CAPE", "on"},
+    {"var_REFC", "on"},
+    {"var_RH", "on"},
+    {"var_HGT", "on"},
+    {"lev_10_m_above_ground", "on"},
+    {"lev_2_m_above_ground", "on"},
+    {"lev_surface", "on"},
+    {"lev_entire_atmosphere", "on"},
+    {"lev_850_mb", "on"},
+    {"lev_700_mb", "on"},
+    {"lev_500_mb", "on"},
+    {"lev_300_mb", "on"}};
 
 std::string FormatNumber(double value) {
   std::ostringstream stream;
@@ -448,14 +495,18 @@ std::vector<WeatherProvider> ListWeatherProviders() {
            ? "Native projection-aware NetCDF regridding."
            : "Install native PROJ to enable projection-aware regridding.",
        UkvProjectionAvailable()},
-      {"dwd_icon_eu", "DWD ICON-EU 13 km forecast", "DWD Open Data", "GRIB2",
+      {"metno_nordic", "MET Norway Nordic 1 km forecast", "MET Norway THREDDS",
+       "NetCDF source, converted to OpenCPN GRIB", "free/no account",
+       "MEPS-derived compact Nordic forecast, regridded from Lambert "
+       "conformal conic NetCDF."},
+      {"dwd_icon_eu", "DWD ICON-EU 7 km forecast", "DWD Open Data", "GRIB2",
        "free/no account",
        "Full-domain DWD regular-lat/lon field files; bbox cropping is not yet "
        "available."},
       {"ecmwf_ifs_open", "ECMWF IFS Open Data forecast", "ECMWF Open Data",
        "GRIB2", "free/no account",
-       "Indexed global Open Data surface fields; bbox cropping is not yet "
-       "available."},
+       "Indexed global Open Data surface and pressure-level fields; bbox "
+       "cropping is not yet available."},
       {"ecmwf_aifs_open", "ECMWF AIFS Open Data forecast (experimental)",
        "ECMWF Open Data", "GRIB2", "free/no account",
        "Experimental indexed AIFS Open Data surface fields."},
@@ -482,7 +533,14 @@ std::map<std::string, std::string> GfsVariablesForPreset(
     result.insert(kMarineFields.begin(), kMarineFields.end());
     return result;
   }
-  throw ValidationError("weather-preset must be minimal, routing, or marine");
+  if (preset == "all") {
+    auto result = kRoutingFields;
+    result.insert(kAllDisplayableFields.begin(),
+                  kAllDisplayableFields.end());
+    return result;
+  }
+  throw ValidationError(
+      "weather-preset must be minimal, routing, marine, or all");
 }
 
 std::vector<GFSCycle> GfsCycleCandidates(const GFSRequest& request,
@@ -707,8 +765,11 @@ std::vector<int> DwdIconEuForecastHourSequence(int hours, int step_hours) {
 std::map<std::string, std::string> DwdIconEuFieldsForPreset(
     const std::string& preset) {
   if (preset == "minimal") return kDwdMinimalFields;
-  if (preset == "routing" || preset == "marine") return kDwdRoutingFields;
-  throw ValidationError("weather-preset must be minimal, routing, or marine");
+  if (preset == "routing") return kDwdRoutingFields;
+  if (preset == "marine") return kDwdMarineFields;
+  if (preset == "all") return kDwdAllDisplayableFields;
+  throw ValidationError(
+      "weather-preset must be minimal, routing, marine, or all");
 }
 
 std::vector<GFSCycle> DwdIconEuCycleCandidates(const GFSRequest& request,
@@ -761,7 +822,7 @@ WeatherGenerateResult GenerateDwdIconEu(const GFSRequest& request,
                                         ProgressCallback progress) {
   progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
-  const BoundingBox domain{-32.5, 20.0, 42.5, 72.5};
+  const BoundingBox domain{-23.5, 29.5, 62.5, 70.5};
   if (!domain.Contains(request.bbox))
     throw ValidationError(
         "DWD ICON-EU bbox is outside the supported Europe regional domain");
@@ -771,8 +832,8 @@ WeatherGenerateResult GenerateDwdIconEu(const GFSRequest& request,
   const auto cycles = DwdIconEuCycleCandidates(request, now);
   if (request.dry_run) {
     WeatherGenerateResult result{"dwd_icon_eu",
-                                 "DWD ICON-EU 13 km forecast via Open Data",
-                                 "icon_eu_regular_lat_lon_13km",
+                                 "DWD ICON-EU 7 km forecast via Open Data",
+                                 "icon_eu_regular_lat_lon_7km",
                                  cycles.front(),
                                  request.bbox,
                                  hours,
@@ -847,18 +908,22 @@ WeatherGenerateResult GenerateDwdIconEu(const GFSRequest& request,
                                           ? "."
                                           : request.output.parent_path());
   const auto temporary = TemporarySibling(request.output);
+  auto simple = temporary;
+  simple += ".simple.grib2";
   try {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     for (const auto& segment : segments)
       output.write(reinterpret_cast<const char*>(segment.data()),
                    static_cast<std::streamsize>(segment.size()));
     output.close();
-    const auto scan = ScanGribMessages(temporary);
-    const auto inspection = InspectGrib(temporary);
-    std::filesystem::rename(temporary, request.output);
+    RepackGrib2ToSimplePacking(temporary, simple);
+    const auto scan = ScanGribMessages(simple);
+    const auto inspection = InspectGrib(simple);
+    std::filesystem::remove(temporary);
+    std::filesystem::rename(simple, request.output);
     return {"dwd_icon_eu",
-            "DWD ICON-EU 13 km forecast via Open Data",
-            "icon_eu_regular_lat_lon_13km",
+            "DWD ICON-EU 7 km forecast via Open Data",
+            "icon_eu_regular_lat_lon_7km",
             *selected,
             request.bbox,
             hours,
@@ -871,6 +936,7 @@ WeatherGenerateResult GenerateDwdIconEu(const GFSRequest& request,
   } catch (...) {
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);
+    std::filesystem::remove(simple, ignored);
     throw;
   }
 }
@@ -912,7 +978,46 @@ std::map<std::string, std::string> HrrrVariablesForPreset(
     result.insert(kHrrrMarineFields.begin(), kHrrrMarineFields.end());
     return result;
   }
-  throw ValidationError("weather-preset must be minimal, routing, or marine");
+  if (preset == "all") return kHrrrAllDisplayableFields;
+  throw ValidationError(
+      "weather-preset must be minimal, routing, marine, or all");
+}
+
+std::set<std::pair<std::string, std::string>> HrrrFieldPairsForPreset(
+    const std::string& preset) {
+  std::set<std::pair<std::string, std::string>> result{
+      {"UGRD", "10 m above ground"}, {"VGRD", "10 m above ground"}};
+  if (preset == "minimal") return result;
+  result.insert({"TMP", "2 m above ground"});
+  result.insert({"PRES", "surface"});
+  if (preset == "routing") return result;
+  result.insert({"GUST", "surface"});
+  if (preset == "marine") {
+    result.insert({"APCP", "surface"});
+    result.insert({"TCDC", "entire atmosphere"});
+    return result;
+  }
+  if (preset != "all")
+    throw ValidationError(
+        "weather-preset must be minimal, routing, marine, or all");
+  result.insert({"APCP", "surface"});
+  result.insert({"TCDC", "entire atmosphere"});
+  result.insert({"CAPE", "surface"});
+  result.insert({"REFC", "entire atmosphere"});
+  result.insert({"RH", "2 m above ground"});
+  for (const char* level : {"850 mb", "700 mb", "500 mb", "300 mb"}) {
+    result.insert({"UGRD", level});
+    result.insert({"VGRD", level});
+  }
+  // HRRR's public wrfsfc file carries temperature and geopotential height at
+  // 850/700/500 hPa, but not at 300 hPa, and carries dew point rather than
+  // pressure-level relative humidity. Request only directly displayable
+  // fields actually present in this product.
+  for (const char* level : {"850 mb", "700 mb", "500 mb"}) {
+    result.insert({"TMP", level});
+    result.insert({"HGT", level});
+  }
+  return result;
 }
 
 std::string BuildHrrrFileUrl(const GFSCycle& cycle, int forecast_hour) {
@@ -1016,22 +1121,7 @@ WeatherGenerateResult GenerateHrrr(const GFSRequest& request, HttpGet http_get,
   std::optional<GFSCycle> selected;
   std::vector<std::vector<unsigned char>> hour_segments;
   std::vector<std::string> urls;
-  const std::map<std::string, std::string> level_for{
-      {"UGRD", "10 m above ground"},
-      {"VGRD", "10 m above ground"},
-      {"TMP", "2 m above ground"},
-      {"PRES", "surface"},
-      {"GUST", "surface"}};
-  std::set<std::pair<std::string, std::string>> requested;
-  for (const auto& [name, level] : level_for) {
-    if (fields.contains("var_" + name) &&
-        fields.contains("lev_" + std::string(level == "10 m above ground"
-                                                 ? "10_m_above_ground"
-                                             : level == "2 m above ground"
-                                                 ? "2_m_above_ground"
-                                                 : "surface")))
-      requested.insert({name, level});
-  }
+  const auto requested = HrrrFieldPairsForPreset(request.preset);
   for (const auto& cycle : cycles) {
     try {
       hour_segments.clear();
@@ -1124,7 +1214,8 @@ WeatherGenerateResult GenerateHrrr(const GFSRequest& request, HttpGet http_get,
 
 std::string BuildEcmwfDataUrl(const GFSCycle& cycle, int forecast_hour,
                               bool aifs) {
-  const std::string model = aifs ? "aifs" : "ifs";
+  // AIFS v2 moved from the legacy "aifs" path to "aifs-single" in 2026.
+  const std::string model = aifs ? "aifs-single" : "ifs";
   return "https://data.ecmwf.int/forecasts/" + cycle.date + "/" + cycle.cycle +
          "z/" + model + "/0p25/oper/" + cycle.date + cycle.cycle + "0000-" +
          std::to_string(forecast_hour) + "h-oper-fc.grib2";
@@ -1135,6 +1226,47 @@ std::string BuildEcmwfIndexUrl(const GFSCycle& cycle, int forecast_hour,
   auto url = BuildEcmwfDataUrl(cycle, forecast_hour, aifs);
   url.resize(url.size() - std::string("grib2").size());
   return url + "index";
+}
+
+struct EcmwfFieldSelection {
+  std::string key;
+  std::string parameter;
+  std::string level_type;
+  std::optional<std::string> level;
+};
+
+std::vector<EcmwfFieldSelection> EcmwfFieldsForPreset(
+    const std::string& preset, bool aifs) {
+  std::vector<EcmwfFieldSelection> fields{
+      {"10u", "10u", "sfc", std::nullopt},
+      {"10v", "10v", "sfc", std::nullopt}};
+  if (preset == "minimal") return fields;
+  fields.push_back({"msl", "msl", "sfc", std::nullopt});
+  fields.push_back({"2t", "2t", "sfc", std::nullopt});
+  if (preset == "routing") return fields;
+  fields.push_back({"tp", "tp", "sfc", std::nullopt});
+  fields.push_back({"tcc", "tcc", "sfc", std::nullopt});
+  if (!aifs) fields.push_back({"10fg", "10fg", "sfc", std::nullopt});
+  if (preset == "marine") return fields;
+  if (preset != "all")
+    throw ValidationError(
+        "weather-preset must be minimal, routing, marine, or all");
+  if (!aifs)
+    fields.push_back({"mucape", "mucape", "sfc", std::nullopt});
+  for (const char* level : {"850", "700", "500", "300"}) {
+    fields.push_back(
+        {std::string("u:") + level, "u", "pl", std::string(level)});
+    fields.push_back(
+        {std::string("v:") + level, "v", "pl", std::string(level)});
+    fields.push_back(
+        {std::string("t:") + level, "t", "pl", std::string(level)});
+    fields.push_back({std::string(aifs ? "z:" : "gh:") + level,
+                      aifs ? "z" : "gh", "pl", std::string(level)});
+    if (!aifs)
+      fields.push_back(
+          {std::string("r:") + level, "r", "pl", std::string(level)});
+  }
+  return fields;
 }
 
 WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
@@ -1149,8 +1281,13 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
         "step-hours must be 6 or 12 for ECMWF AIFS Open Data");
   const auto hours = ForecastHourSequence(request.hours, request.step_hours);
   const auto cycles = SixHourlyCycles(request, now);
-  const std::map<std::string, std::string> fields{
-      {"10u", "on"}, {"10v", "on"}, {"msl", "on"}, {"2t", "on"}};
+  const auto selections = EcmwfFieldsForPreset(request.preset, aifs);
+  std::map<std::string, std::string> fields;
+  std::set<std::string> wanted;
+  for (const auto& selection : selections) {
+    fields[selection.key] = "on";
+    wanted.insert(selection.key);
+  }
   if (request.dry_run) {
     WeatherGenerateResult result{
         aifs ? "ecmwf_aifs_open" : "ecmwf_ifs_open",
@@ -1177,7 +1314,6 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
   std::optional<GFSCycle> selected;
   std::vector<std::vector<unsigned char>> segments;
   std::vector<std::string> urls;
-  const std::set<std::string> wanted{"10u", "10v", "msl", "2t"};
   for (const auto& cycle : cycles) {
     try {
       segments.clear();
@@ -1205,14 +1341,32 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
                 continue;
               const std::string parameter = entry.get("param", "").asString();
               const std::string type = entry.get("type", "").asString();
-              const std::string level = entry.get("levtype", "").asString();
+              const std::string level_type =
+                  entry.get("levtype", "").asString();
+              const auto& level_value = entry["levelist"];
+              const std::string level =
+                  level_value.isString()
+                      ? level_value.asString()
+                      : (level_value.isNumeric()
+                             ? std::to_string(level_value.asInt())
+                             : std::string{});
               const auto& step_value = entry["step"];
               const std::string step = step_value.isString()
                                            ? step_value.asString()
                                            : std::to_string(step_value.asInt());
-              if (!wanted.contains(parameter) || type != "fc" ||
-                  level != "sfc" || step != std::to_string(hour))
-                continue;
+              const auto selected = std::find_if(
+                  selections.begin(), selections.end(),
+                  [&](const EcmwfFieldSelection& candidate) {
+                    const bool parameter_matches =
+                        parameter == candidate.parameter ||
+                        (candidate.parameter == "10fg" &&
+                         parameter.starts_with("10fg"));
+                    return parameter_matches && type == "fc" &&
+                           level_type == candidate.level_type &&
+                           (!candidate.level || *candidate.level == level) &&
+                           step == std::to_string(hour);
+                  });
+              if (selected == selections.end()) continue;
               const auto offset = entry["_offset"].asUInt64();
               const auto length = entry["_length"].asUInt64();
               if (length == 0)
@@ -1222,16 +1376,16 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
                                           request.timeout_seconds);
               ValidateDownloaded(bytes, aifs ? "ECMWF AIFS" : "ECMWF IFS");
               combined.insert(combined.end(), bytes.begin(), bytes.end());
-              found.insert(parameter);
+              found.insert(selected->key);
               Json::Value detail;
               detail["cycle"] = cycle.CycleTime();
               detail["hour"] = hour;
-              detail["field"] = parameter;
+              detail["field"] = selected->key;
               Progress(progress, "downloaded ECMWF indexed field", detail);
             }
             if (found != wanted)
               throw ValidationError(
-                  "ECMWF index did not contain all requested surface fields");
+                  "ECMWF index did not contain all requested fields");
             return DownloadedHour{data_url, std::move(combined)};
           });
       for (auto& item : downloaded) {
@@ -1256,9 +1410,14 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
       output.write(reinterpret_cast<const char*>(segment.data()),
                    static_cast<std::streamsize>(segment.size()));
     output.close();
-    const auto scan = ScanGribMessages(temporary);
-    const auto inspection = InspectGrib(temporary);
-    std::filesystem::rename(temporary, request.output);
+    auto repacked = temporary;
+    repacked += ".simple.grib2";
+    RepackGrib2ToSimplePacking(temporary, repacked);
+    const auto scan = ScanGribMessages(repacked);
+    const auto inspection = InspectGrib(repacked);
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    std::filesystem::rename(repacked, request.output);
     return {
         aifs ? "ecmwf_aifs_open" : "ecmwf_ifs_open",
         aifs ? "ECMWF AIFS Open Data forecast" : "ECMWF IFS Open Data forecast",
@@ -1275,6 +1434,9 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
   } catch (...) {
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);
+    auto repacked = temporary;
+    repacked += ".simple.grib2";
+    std::filesystem::remove(repacked, ignored);
     throw;
   }
 }

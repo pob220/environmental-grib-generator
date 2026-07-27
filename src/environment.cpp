@@ -10,6 +10,7 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/grib.h"
+#include "environmental_grib/metno.h"
 #include "environmental_grib/netcdf.h"
 #include "environmental_grib/parallel.h"
 #include "environmental_grib/platform.h"
@@ -256,7 +257,8 @@ std::string WeatherFingerprint(const EnvironmentRequest& request) {
         << request.weather_provider << '|' << request.step_hours << '|'
         << request.cycle << '|' << request.date.value_or("") << '|'
         << request.weather_preset << '|' << std::setprecision(17)
-        << request.weather_grid_spacing_deg;
+        << request.weather_grid_spacing_deg << '|'
+        << request.metno_dataset_url.value_or("");
   return value.str();
 }
 
@@ -321,6 +323,7 @@ int WeatherHorizon(const std::string& provider, int requested) {
   if (provider == "ukmo_ukv" || provider == "dwd_icon_eu")
     return std::min(requested, 120);
   if (provider == "noaa_hrrr") return std::min(requested, 48);
+  if (provider == "metno_nordic") return std::min(requested, 56);
   return requested;
 }
 
@@ -328,6 +331,8 @@ int WeatherStep(const std::string& provider, int requested, bool fallback) {
   if (provider == "noaa_hrrr") return 1;
   if (provider == "ukmo_ukv") return requested == 1 ? 1 : 3;
   if (provider == "dwd_icon_eu") return requested == 1 ? 1 : 3;
+  if (provider == "metno_nordic")
+    return requested == 1 ? 1 : requested <= 3 ? 3 : requested <= 6 ? 6 : 12;
   if (provider == "ecmwf_aifs_open") return 6;
   if (provider == "ecmwf_ifs_open") return 3;
   if (provider == "gfs" && fallback) return 3;
@@ -941,6 +946,20 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     const auto weather = GenerateUkv(
         ukv, MakeRetryingHttpGet(http_get, "Met Office UKV weather", progress),
         now, progress);
+    streams.emplace_back("weather", weather.output);
+    selected_cycle = weather.cycle.CycleTime();
+  } else if (request.weather_provider == "metno_nordic") {
+    MetNoRequest metno;
+    metno.bbox = request.bbox;
+    metno.output = workspace.File("weather.grb");
+    metno.hours = request.hours;
+    metno.step_hours = request.step_hours;
+    metno.overwrite = true;
+    metno.preset = request.weather_preset;
+    metno.grid_spacing_deg = request.weather_grid_spacing_deg;
+    if (request.metno_dataset_url)
+      metno.dataset_url = *request.metno_dataset_url;
+    const auto weather = GenerateMetNoNordic(metno, progress);
     streams.emplace_back("weather", weather.output);
     selected_cycle = weather.cycle.CycleTime();
   } else if (request.weather_provider == "dwd_icon_eu" ||

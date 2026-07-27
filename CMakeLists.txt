@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(environmental_grib_generator VERSION 0.1.2 LANGUAGES CXX)
+project(environmental_grib_generator VERSION 0.1.3 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -75,6 +75,7 @@ add_library(environmental_grib_engine STATIC
   src/geo.cpp
   src/grib.cpp
   src/job.cpp
+  src/metno.cpp
   src/model.cpp
   src/netcdf.cpp
   src/providers.cpp

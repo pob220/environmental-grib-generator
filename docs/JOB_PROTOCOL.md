@@ -26,12 +26,12 @@ contains one compact JSON object per line. Event types are `started`,
     "start": "2026-07-12T00:00:00Z",
     "hours": 72,
     "stepHours": 3,
-    "weatherProvider": "ukmo_ukv",
+    "weatherProvider": "metno_nordic",
     "extendForecast": true,
     "fallbackWeatherProvider": "gfs",
     "fallbackWaveProvider": "gfs_wave",
     "fallbackCurrentSource": "offline-tidal",
-    "weatherPreset": "routing",
+    "weatherPreset": "all",
     "includeWaves": true,
     "waveProvider": "gfs_wave",
     "currentSource": "tpxo-cache",
@@ -49,6 +49,13 @@ contains one compact JSON object per line. Event types are `started`,
 
 Passwords must never be placed in a job file. The named environment variable
 is read by the helper after validating the schema.
+
+Implemented generated-weather provider IDs are `gfs`, `noaa_hrrr`,
+`ukmo_ukv`, `metno_nordic`, `dwd_icon_eu`, `ecmwf_ifs_open`, and
+`ecmwf_aifs_open`. Weather presets are `minimal`, `routing`, `marine`, and
+`all`. `all` is provider-aware and requests every field that xGRIB can display
+from the selected provider; it does not imply waves or currents, which remain
+independent request components.
 
 The forecast-extension fields are optional and default to disabled/`none` for
 backward compatibility. When enabled, component generators use known provider

@@ -26,6 +26,8 @@ struct EnvironmentRequest {
   std::string fallback_current_source{"none"};
   std::string weather_preset{"routing"};
   double weather_grid_spacing_deg{0.025};
+  // Test/deployment override; normal jobs use MET Norway's official endpoint.
+  std::optional<std::string> metno_dataset_url;
   std::optional<std::filesystem::path> weather_file;
   bool include_waves{false};
   std::string wave_provider{"gfs_wave"};

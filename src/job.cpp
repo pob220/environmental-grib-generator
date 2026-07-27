@@ -154,7 +154,10 @@ Json::Value GeneratorCapabilitiesJson() {
   value["operations"] = StringArray({"generateEnvironment"});
   value["weatherProviders"] = StringArray(
       {"none", "existing-file", "gfs", "noaa_hrrr", "ukmo_ukv",
-       "dwd_icon_eu", "ecmwf_ifs_open", "ecmwf_aifs_open"});
+       "metno_nordic", "dwd_icon_eu", "ecmwf_ifs_open",
+       "ecmwf_aifs_open"});
+  value["weatherPresets"] =
+      StringArray({"minimal", "routing", "marine", "all"});
   value["waveProviders"] =
       StringArray({"gfs_wave", "copernicus_global_waves"});
   value["forecastExtension"] = true;

@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <set>
 #include <sstream>
 
 #include "environmental_grib/error.h"
@@ -23,12 +24,33 @@ namespace environmental_grib {
 namespace {
 constexpr const char* kEndpoint =
     "https://met-office-atmospheric-model-data.s3.eu-west-2.amazonaws.com/";
-const std::map<std::string, std::string> kFields{
-    {"prmsl", "pressure_at_mean_sea_level"},
-    {"2t", "temperature_at_screen_level"},
-    {"speed", "wind_speed_at_10m"},
-    {"direction", "wind_direction_at_10m"},
-};
+std::set<std::string> UkvTokensForPreset(const std::string& preset,
+                                         int forecast_hour) {
+  std::set<std::string> result;
+  result.insert("wind_speed_at_10m");
+  result.insert("wind_direction_at_10m");
+  if (preset == "minimal") return result;
+  result.insert("pressure_at_mean_sea_level");
+  result.insert("temperature_at_screen_level");
+  if (preset == "routing") return result;
+  result.insert("wind_gust_at_10m");
+  result.insert("cloud_amount_of_total_cloud");
+  if (forecast_hour > 0)
+    result.insert(forecast_hour <= 54 ? "precipitation_accumulation-PT01H"
+                                      : "precipitation_accumulation-PT03H");
+  if (preset == "marine") return result;
+  if (preset != "all")
+    throw ValidationError(
+        "weather-preset must be minimal, routing, marine, or all");
+  result.insert("CAPE_surface");
+  result.insert("relative_humidity_at_screen_level");
+  result.insert("wind_speed_on_pressure_levels");
+  result.insert("wind_direction_on_pressure_levels");
+  result.insert("temperature_on_pressure_levels");
+  result.insert("relative_humidity_on_pressure_levels");
+  result.insert("geopotential_height_on_pressure_levels");
+  return result;
+}
 
 void Nc(int status, const std::string& action) {
   if (status != NC_NOERR)
@@ -102,7 +124,9 @@ struct ProjectedField {
       semi_minor{};
 };
 
-ProjectedField ReadProjectedField(const std::filesystem::path& path) {
+ProjectedField ReadProjectedField(
+    const std::filesystem::path& path,
+    std::optional<double> pressure_level_pa = std::nullopt) {
   NcFile file(path);
   const int x_id = FindCoordinate(file.id(), "projection_x_coordinate",
                                   "projection_x_coordinate");
@@ -134,6 +158,46 @@ ProjectedField ReadProjectedField(const std::filesystem::path& path) {
       dims[dims.size() - 1] != Dims(file.id(), x_id)[0])
     throw ValidationError("UKV data dimensions do not end in projected y/x");
   std::vector<std::size_t> start(dims.size(), 0), count(dims.size(), 1);
+  if (pressure_level_pa) {
+    bool selected = false;
+    for (std::size_t dimension_index = 0;
+         dimension_index + 2 < dims.size(); ++dimension_index) {
+      const int dimension = dims[dimension_index];
+      for (int id = 0; id < variables; ++id) {
+        const auto coordinate_dims = Dims(file.id(), id);
+        if (coordinate_dims.size() != 1 ||
+            coordinate_dims.front() != dimension)
+          continue;
+        char variable_name[NC_MAX_NAME + 1]{};
+        Nc(nc_inq_varname(file.id(), id, variable_name),
+           "reading UKV coordinate name");
+        const auto standard_name = AttributeText(file.id(), id, "standard_name");
+        const auto units = AttributeText(file.id(), id, "units");
+        if (standard_name != "air_pressure" &&
+            std::string(variable_name).find("pressure") == std::string::npos &&
+            units != "Pa")
+          continue;
+        std::vector<double> levels(DimSize(file.id(), dimension));
+        Nc(nc_get_var_double(file.id(), id, levels.data()),
+           "reading UKV pressure levels");
+        const auto nearest = std::min_element(
+            levels.begin(), levels.end(), [&](double lhs, double rhs) {
+              return std::abs(lhs - *pressure_level_pa) <
+                     std::abs(rhs - *pressure_level_pa);
+            });
+        if (nearest == levels.end() ||
+            std::abs(*nearest - *pressure_level_pa) > 1.0)
+          throw ValidationError("requested UKV pressure level is unavailable");
+        start[dimension_index] =
+            static_cast<std::size_t>(nearest - levels.begin());
+        selected = true;
+        break;
+      }
+      if (selected) break;
+    }
+    if (!selected)
+      throw ValidationError("UKV pressure-level field lacks a pressure axis");
+  }
   count[dims.size() - 2] = y.size();
   count[dims.size() - 1] = x.size();
   std::vector<double> values(x.size() * y.size());
@@ -367,7 +431,6 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
     bool complete = true;
     struct FieldRequest {
       int hour{};
-      std::string short_name;
       std::string token;
       std::filesystem::path path;
     };
@@ -377,13 +440,15 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
       std::string url;
     };
     std::vector<FieldRequest> requests;
-    for (int hour : hours)
-      for (const auto& [short_name, token] : kFields) {
+    for (int hour : hours) {
+      const auto tokens = UkvTokensForPreset(request.preset, hour);
+      for (const auto& token : tokens) {
         auto path = std::filesystem::temp_directory_path() /
                     ("environmental-ukv-" + std::to_string(ProcessId()) + "-" +
-                     std::to_string(hour) + "-" + short_name + ".nc");
-        requests.push_back({hour, short_name, token, std::move(path)});
+                     std::to_string(hour) + "-" + token + ".nc");
+        requests.push_back({hour, token, std::move(path)});
       }
+    }
     try {
       auto downloaded = ParallelMapOrdered(
           requests, kDefaultDownloadConcurrency,
@@ -405,7 +470,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
                       static_cast<std::streamsize>(bytes.size()));
             if (!out) throw ValidationError("writing UKV source file failed");
             return DownloadedField{
-                {field_request.hour, field_request.short_name},
+                {field_request.hour, field_request.token},
                 field_request.path,
                 url};
           });
@@ -432,53 +497,118 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   std::vector<Grib2Field> output_fields;
   for (int hour : hours) {
-    const auto pressure = ReadProjectedField(files.at({hour, "prmsl"}));
-    const auto temperature = ReadProjectedField(files.at({hour, "2t"}));
-    const auto speed = ReadProjectedField(files.at({hour, "speed"}));
-    const auto direction = ReadProjectedField(files.at({hour, "direction"}));
+    const auto source = [&](const std::string& token,
+                            std::optional<double> pressure = std::nullopt) {
+      return ReadProjectedField(files.at({hour, token}), pressure);
+    };
+    const auto speed = source("wind_speed_at_10m");
+    const auto direction = source("wind_direction_at_10m");
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
-    Projection projection(pressure);
-    ProjectedField source_u = speed, source_v = speed;
-    for (std::size_t i = 0; i < speed.values.size(); ++i) {
-      const bool missing = speed.mask[i] || direction.mask[i];
-      source_u.mask[i] = source_v.mask[i] = missing;
-      if (!missing) {
-        const double radians = direction.values[i] * std::numbers::pi / 180.0;
-        source_u.values[i] = -speed.values[i] * std::sin(radians);
-        source_v.values[i] = -speed.values[i] * std::cos(radians);
-      }
-    }
-    std::map<std::string, std::vector<double>> values;
-    std::map<std::string, std::vector<std::uint8_t>> masks;
-    for (const auto& name : {"prmsl", "2t", "10u", "10v"}) {
-      values[name].resize(grid.size());
-      masks[name].resize(grid.size());
-    }
-    for (std::size_t y = 0; y < grid.ny(); ++y)
-      for (std::size_t x = 0; x < grid.nx(); ++x) {
-        const auto [px, py] =
-            projection.Forward(grid.longitudes[x], grid.latitudes[y]);
-        const auto p = Interpolate(pressure, px, py),
-                   t = Interpolate(temperature, px, py);
-        const auto u = Interpolate(source_u, px, py),
-                   v = Interpolate(source_v, px, py);
-        const auto index = y * grid.nx() + x;
-        values["prmsl"][index] = p.first;
-        values["2t"][index] = t.first;
-        values["10u"][index] = u.first;
-        values["10v"][index] = v.first;
-        masks["prmsl"][index] = !p.second;
-        masks["2t"][index] = !t.second;
-        masks["10u"][index] = masks["10v"][index] = !(u.second && v.second);
-      }
-    for (const auto& name : {"10u", "10v", "prmsl", "2t"}) {
-      const auto missing = std::count_if(masks[name].begin(), masks[name].end(),
-                                         [](auto value) { return value != 0; });
+    Projection projection(speed);
+    const auto regrid = [&](const ProjectedField& field,
+                            double scale = 1.0) {
+      std::pair<std::vector<double>, std::vector<std::uint8_t>> result{
+          std::vector<double>(grid.size()),
+          std::vector<std::uint8_t>(grid.size())};
+      for (std::size_t y = 0; y < grid.ny(); ++y)
+        for (std::size_t x = 0; x < grid.nx(); ++x) {
+          const auto [px, py] =
+              projection.Forward(grid.longitudes[x], grid.latitudes[y]);
+          const auto value = Interpolate(field, px, py);
+          const auto index = y * grid.nx() + x;
+          result.first[index] = value.first * scale;
+          result.second[index] = !value.second;
+        }
+      const auto missing =
+          std::count_if(result.second.begin(), result.second.end(),
+                        [](auto value) { return value != 0; });
       if (100.0 * missing / grid.size() > 0.5)
         throw ValidationError(
             "UKV regridded field has more than 0.5% missing cells");
-      output_fields.push_back(
-          {hour, name, std::move(values[name]), std::move(masks[name])});
+      return result;
+    };
+    const auto append = [&](const std::string& short_name,
+                            const ProjectedField& field, double scale = 1.0,
+                            std::optional<std::string> level_type = std::nullopt,
+                            std::optional<double> level = std::nullopt,
+                            std::optional<std::string> step_type = std::nullopt,
+                            int interval_hours = 0) {
+      auto [values, mask] = regrid(field, scale);
+      Grib2Field output;
+      output.forecast_hour = hour;
+      output.short_name = short_name;
+      output.values = std::move(values);
+      output.mask = std::move(mask);
+      output.type_of_level = std::move(level_type);
+      output.level = level;
+      output.step_type = std::move(step_type);
+      output.interval_hours = interval_hours;
+      output_fields.push_back(std::move(output));
+    };
+    const auto append_wind =
+        [&](const ProjectedField& wind_speed,
+            const ProjectedField& wind_direction,
+            const std::string& u_name, const std::string& v_name,
+            std::optional<std::string> level_type = std::nullopt,
+            std::optional<double> level = std::nullopt) {
+          ProjectedField source_u = wind_speed, source_v = wind_speed;
+          for (std::size_t i = 0; i < wind_speed.values.size(); ++i) {
+            const bool missing =
+                wind_speed.mask[i] || wind_direction.mask[i];
+            source_u.mask[i] = source_v.mask[i] = missing;
+            if (!missing) {
+              const double radians =
+                  wind_direction.values[i] * std::numbers::pi / 180.0;
+              source_u.values[i] =
+                  -wind_speed.values[i] * std::sin(radians);
+              source_v.values[i] =
+                  -wind_speed.values[i] * std::cos(radians);
+            }
+          }
+          append(u_name, source_u, 1.0, level_type, level);
+          append(v_name, source_v, 1.0, level_type, level);
+        };
+    append_wind(speed, direction, "10u", "10v");
+    if (request.preset != "minimal") {
+      append("prmsl", source("pressure_at_mean_sea_level"));
+      append("2t", source("temperature_at_screen_level"));
+    }
+    if (request.preset == "marine" || request.preset == "all") {
+      append("gust", source("wind_gust_at_10m"), 1.0,
+             std::string("surface"), 0.0);
+      append("tcc", source("cloud_amount_of_total_cloud"), 100.0,
+             std::string("entireAtmosphere"), 0.0);
+      if (hour > 0) {
+        const int interval = hour <= 54 ? 1 : 3;
+        const std::string token =
+            interval == 1 ? "precipitation_accumulation-PT01H"
+                          : "precipitation_accumulation-PT03H";
+        append("tp", source(token), 1000.0, std::string("surface"), 0.0,
+               std::string("accum"), interval);
+      }
+    }
+    if (request.preset == "all") {
+      append("cape", source("CAPE_surface"), 1.0, std::string("surface"), 0.0);
+      append("r", source("relative_humidity_at_screen_level"), 100.0,
+             std::string("heightAboveGround"), 2.0);
+      for (const double pressure_pa :
+           {85000.0, 70000.0, 50000.0, 30000.0}) {
+        const double pressure_hpa = pressure_pa / 100.0;
+        const auto upper_speed =
+            source("wind_speed_on_pressure_levels", pressure_pa);
+        const auto upper_direction =
+            source("wind_direction_on_pressure_levels", pressure_pa);
+        append_wind(upper_speed, upper_direction, "u", "v",
+                    std::string("isobaricInhPa"), pressure_hpa);
+        append("t", source("temperature_on_pressure_levels", pressure_pa), 1.0,
+               std::string("isobaricInhPa"), pressure_hpa);
+        append("r",
+               source("relative_humidity_on_pressure_levels", pressure_pa),
+               100.0, std::string("isobaricInhPa"), pressure_hpa);
+        append("gh",
+               source("geopotential_height_on_pressure_levels", pressure_pa),
+               1.0, std::string("isobaricInhPa"), pressure_hpa);
+      }
     }
 #endif
   }

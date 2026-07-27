@@ -8,6 +8,12 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Weather generation supports NOAA GFS and HRRR, Met Office UKV, MET Norway's
+Nordic forecast, DWD ICON-EU, and ECMWF IFS/AIFS Open Data. Presets are
+`minimal`, `routing`, `marine`, and provider-aware `all`. The latter selects
+all fields which the target xGRIB reader can display; it is intentionally not
+the upstream provider's unrestricted field inventory.
+
 ## Dependencies
 
 The engine uses maintained distribution libraries: ecCodes, JsonCpp, NetCDF-C,

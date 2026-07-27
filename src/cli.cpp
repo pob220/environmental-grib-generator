@@ -16,6 +16,7 @@
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/job.h"
+#include "environmental_grib/metno.h"
 #include "environmental_grib/netcdf.h"
 #include "environmental_grib/platform.h"
 #include "environmental_grib/providers.h"
@@ -219,7 +220,19 @@ int GenerateWeather(const std::vector<std::string>& args) {
     ukv.dry_run = request.dry_run;
     ukv.preset = request.preset;
     ukv.timeout_seconds = request.timeout_seconds;
+    if (grid_spacing) ukv.grid_spacing_deg = *grid_spacing;
     PrintJson(eg::WeatherResultJson(eg::GenerateUkv(ukv)));
+  } else if (provider == "metno_nordic") {
+    eg::MetNoRequest metno;
+    metno.bbox = request.bbox;
+    metno.output = request.output;
+    metno.hours = request.hours;
+    metno.step_hours = request.step_hours;
+    metno.overwrite = request.overwrite;
+    metno.dry_run = request.dry_run;
+    metno.preset = request.preset;
+    if (grid_spacing) metno.grid_spacing_deg = *grid_spacing;
+    PrintJson(eg::WeatherResultJson(eg::GenerateMetNoNordic(metno)));
   } else if (provider == "copernicus_global_waves") {
     if (!start)
       throw eg::ValidationError("Copernicus Global Waves requires --start");

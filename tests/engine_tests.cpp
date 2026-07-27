@@ -18,6 +18,7 @@
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/job.h"
+#include "environmental_grib/metno.h"
 #include "environmental_grib/model.h"
 #include "environmental_grib/platform.h"
 #include "environmental_grib/netcdf.h"
@@ -339,6 +340,85 @@ void WriteUkvFixture(const std::filesystem::path& path,
   Nc(nc_close(file), "close UKV fixture");
 }
 
+void WriteMetNoFixture(const std::filesystem::path& path) {
+  int file = -1;
+  CreateNetCDF(path, &file, "create MET Norway fixture");
+  int time_dim = -1, y_dim = -1, x_dim = -1;
+  Nc(nc_def_dim(file, "time", 2, &time_dim), "MET Norway time dimension");
+  Nc(nc_def_dim(file, "y", 7, &y_dim), "MET Norway y dimension");
+  Nc(nc_def_dim(file, "x", 7, &x_dim), "MET Norway x dimension");
+  int time = -1, reference = -1, y = -1, x = -1, mapping = -1;
+  Nc(nc_def_var(file, "time", NC_DOUBLE, 1, &time_dim, &time),
+     "MET Norway time");
+  Nc(nc_def_var(file, "forecast_reference_time", NC_DOUBLE, 0, nullptr,
+                &reference),
+     "MET Norway reference");
+  Nc(nc_def_var(file, "y", NC_DOUBLE, 1, &y_dim, &y), "MET Norway y");
+  Nc(nc_def_var(file, "x", NC_DOUBLE, 1, &x_dim, &x), "MET Norway x");
+  Nc(nc_def_var(file, "projection_lcc", NC_INT, 0, nullptr, &mapping),
+     "MET Norway mapping");
+  const int dimensions[] = {time_dim, y_dim, x_dim};
+  std::vector<int> fields;
+  for (const char* name :
+       {"air_temperature_2m", "precipitation_amount", "wind_direction_10m",
+        "wind_speed_10m", "wind_speed_of_gust", "cloud_area_fraction",
+        "air_pressure_at_sea_level", "relative_humidity_2m"}) {
+    int variable = -1;
+    Nc(nc_def_var(file, name, NC_DOUBLE, 3, dimensions, &variable),
+       std::string("MET Norway field ") + name);
+    const std::string mapping_name = "projection_lcc";
+    Nc(nc_put_att_text(file, variable, "grid_mapping", mapping_name.size(),
+                       mapping_name.c_str()),
+       "MET Norway field mapping");
+    fields.push_back(variable);
+  }
+  const std::string time_units =
+      "seconds since 1970-01-01 00:00:00 +00:00";
+  for (const int variable : {time, reference})
+    Nc(nc_put_att_text(file, variable, "units", time_units.size(),
+                       time_units.c_str()),
+       "MET Norway time units");
+  const std::string mapping_name = "lambert_conformal_conic";
+  Nc(nc_put_att_text(file, mapping, "grid_mapping_name", mapping_name.size(),
+                     mapping_name.c_str()),
+     "MET Norway mapping name");
+  const double latitude_origin = 63.0, longitude_origin = 15.0,
+               radius = 6371000.0;
+  const double parallels[] = {63.0, 63.0};
+  Nc(nc_put_att_double(file, mapping, "latitude_of_projection_origin",
+                       NC_DOUBLE, 1, &latitude_origin),
+     "MET Norway projection origin");
+  Nc(nc_put_att_double(file, mapping, "longitude_of_central_meridian",
+                       NC_DOUBLE, 1, &longitude_origin),
+     "MET Norway central meridian");
+  Nc(nc_put_att_double(file, mapping, "standard_parallel", NC_DOUBLE, 2,
+                       parallels),
+     "MET Norway standard parallels");
+  Nc(nc_put_att_double(file, mapping, "earth_radius", NC_DOUBLE, 1, &radius),
+     "MET Norway earth radius");
+  Nc(nc_enddef(file), "end MET Norway definitions");
+  const auto reference_time = eg::ParseUtcDateTime("2026-07-27T00:00:00Z");
+  const double epoch = static_cast<double>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          reference_time.time_since_epoch())
+          .count());
+  const double times[] = {epoch, epoch + 3600.0};
+  const double axis[] = {-300000.0, -200000.0, -100000.0, 0.0,
+                         100000.0,  200000.0,  300000.0};
+  Nc(nc_put_var_double(file, time, times), "MET Norway times");
+  Nc(nc_put_var_double(file, reference, &epoch), "MET Norway reference value");
+  Nc(nc_put_var_double(file, x, axis), "MET Norway x values");
+  Nc(nc_put_var_double(file, y, axis), "MET Norway y values");
+  const std::array<double, 8> values{
+      285.0, 1.0, 270.0, 10.0, 15.0, 0.6, 101500.0, 0.75};
+  for (std::size_t field = 0; field < fields.size(); ++field) {
+    std::vector<double> data(2 * 7 * 7, values[field]);
+    Nc(nc_put_var_double(file, fields[field], data.data()),
+       "MET Norway field values");
+  }
+  Nc(nc_close(file), "close MET Norway fixture");
+}
+
 std::vector<unsigned char> Bzip(const std::vector<unsigned char>& input) {
   std::vector<unsigned char> output(input.size() + input.size() / 100 + 601);
   unsigned int size = static_cast<unsigned int>(output.size());
@@ -425,7 +505,11 @@ int main() {
         "job protocol secret environment mapping");
   const auto capabilities = eg::GeneratorCapabilitiesJson();
   Check(capabilities["schemaVersion"].asInt() == 1 &&
-            capabilities["operations"][0].asString() == "generateEnvironment",
+            capabilities["operations"][0].asString() ==
+                "generateEnvironment" &&
+            capabilities["weatherProviders"][5].asString() ==
+                "metno_nordic" &&
+            capabilities["weatherPresets"][3].asString() == "all",
         "job protocol capabilities");
   int retry_attempts = 0;
   std::vector<int> retry_delays;
@@ -724,6 +808,12 @@ int main() {
         "generic GRIB2 weather/wave writer");
 
   const auto weather_fields = eg::GfsVariablesForPreset("routing");
+  const auto all_weather_fields = eg::GfsVariablesForPreset("all");
+  Check(all_weather_fields.contains("var_GUST") &&
+            all_weather_fields.contains("var_REFC") &&
+            all_weather_fields.contains("var_HGT") &&
+            all_weather_fields.contains("var_RH"),
+        "all displayable GFS preset includes surface and pressure fields");
   const eg::GFSCycle known_cycle{"20260701", "00"};
   const auto weather_url = eg::BuildGfsFilterUrl(
       known_cycle, 6, {-8.5, 50.5, -2.5, 56.5}, weather_fields);
@@ -783,6 +873,10 @@ int main() {
   Check(eg::BuildDwdIconEuUrl({"20260701", "06"}, 3, "u_10m")
                 .find("2026070106_003_U_10M.grib2.bz2") != std::string::npos,
         "ICON-EU URL parity");
+  const auto icon_marine = eg::DwdIconEuFieldsForPreset("marine");
+  Check(icon_marine.contains("10fg") && icon_marine.contains("tp") &&
+            icon_marine.contains("tcc"),
+        "ICON-EU marine preset includes comfort fields");
   const auto icon_path = Temp("icon.grb");
   eg::GFSRequest icon_request{{-8.5, 50.5, -2.5, 56.5}, icon_path, 0};
   icon_request.cycle = "06";
@@ -802,6 +896,11 @@ int main() {
   const auto parsed_inventory = eg::ParseHrrrInventory(hrrr_inventory);
   Check(parsed_inventory.size() == 5 && parsed_inventory[1].offset == 100,
         "HRRR inventory parser");
+  const auto hrrr_marine = eg::HrrrVariablesForPreset("marine");
+  Check(hrrr_marine.contains("var_GUST") &&
+            hrrr_marine.contains("var_APCP") &&
+            hrrr_marine.contains("var_TCDC"),
+        "HRRR marine preset includes gust, precipitation, and cloud");
   const auto hrrr_path = Temp("hrrr.grb");
   eg::GFSRequest hrrr_request{{-100.0, 30.0, -90.0, 40.0}, hrrr_path, 0, 1};
   hrrr_request.cycle = "06";
@@ -821,6 +920,10 @@ int main() {
             "https://data.ecmwf.int/forecasts/20260710/00z/ifs/0p25/oper/"
             "20260710000000-6h-oper-fc.grib2",
         "ECMWF Open Data URL parity");
+  Check(eg::BuildEcmwfDataUrl({"20260710", "00"}, 6, true) ==
+            "https://data.ecmwf.int/forecasts/20260710/00z/aifs-single/0p25/"
+            "oper/20260710000000-6h-oper-fc.grib2",
+        "ECMWF AIFS Single v2 URL parity");
   Check(eg::UkvForecastHours(60, 1).back() == 60 &&
             eg::UkvForecastHours(60, 1).size() == 57,
         "UKV hourly then three-hour cadence");
@@ -1135,6 +1238,73 @@ int main() {
           eg::InspectGrib(ukv_output)["short_name_counts"]["10u"].asUInt64() ==
               1,
       "UKV projected NetCDF regrid and meteorological wind conversion");
+  const auto metno_source = Temp("metno.nc");
+  const auto metno_output = Temp("metno.grb2");
+  WriteMetNoFixture(metno_source);
+  eg::MetNoRequest metno_request;
+  metno_request.bbox = {14.5, 62.5, 15.5, 63.5};
+  metno_request.output = metno_output;
+  metno_request.hours = 1;
+  metno_request.step_hours = 1;
+  metno_request.preset = "all";
+  metno_request.grid_spacing_deg = 0.25;
+  metno_request.dataset_url = eg::PathToUtf8(metno_source);
+  metno_request.overwrite = true;
+  const auto metno = eg::GenerateMetNoNordic(metno_request);
+  const auto metno_inspection = eg::InspectGrib(metno_output);
+  bool metno_precipitation_interval = false;
+  for (const auto& message : metno_inspection["messages"]) {
+    if (message["parameter_category"].asInt() == 1 &&
+        message["parameter_number"].asInt() == 8) {
+      metno_precipitation_interval =
+          message["product_definition_template"].asInt() == 8 &&
+          message["step_type"].asString() == "accum" &&
+          message["start_step"].asInt() == 0 &&
+          message["end_step"].asInt() == 1;
+    }
+  }
+  const bool metno_ok =
+      metno.message_count == 15 &&
+      metno_inspection["short_name_counts"]["10u"].asUInt64() == 2 &&
+      metno_inspection["grib2_parameter_counts"]["0:1:8"].asUInt64() == 1 &&
+      metno_inspection["short_name_counts"]["2r"].asUInt64() == 2 &&
+      metno_precipitation_interval;
+  Check(metno_ok,
+        "MET Norway local NetCDF all-fields conversion");
+  const auto metno_current = Temp("metno-current.grb");
+  const auto metno_environment = Temp("metno-environment.grb2");
+  const auto metno_grid =
+      eg::BuildRegularGrid(metno_request.bbox, metno_request.grid_spacing_deg);
+  eg::CurrentGrid metno_current_0{
+      eg::ParseUtcDateTime("2026-07-27T00:00:00Z"), metno_grid,
+      std::vector<double>(metno_grid.size(), 0.2),
+      std::vector<double>(metno_grid.size(), -0.1), {}};
+  eg::CurrentGrid metno_current_1 = metno_current_0;
+  metno_current_1.time += std::chrono::hours(1);
+  eg::WriteGrib1Currents({metno_current_0, metno_current_1}, metno_current);
+  eg::EnvironmentRequest metno_combined;
+  metno_combined.bbox = metno_request.bbox;
+  metno_combined.start = metno_current_0.time;
+  metno_combined.hours = 1;
+  metno_combined.step_hours = 1;
+  metno_combined.weather_provider = "metno_nordic";
+  metno_combined.weather_preset = "all";
+  metno_combined.weather_grid_spacing_deg = 0.25;
+  metno_combined.metno_dataset_url = eg::PathToUtf8(metno_source);
+  metno_combined.current_source = "existing-file";
+  metno_combined.current_file = metno_current;
+  metno_combined.output = metno_environment;
+  metno_combined.overwrite = true;
+  const auto metno_combined_result =
+      eg::GenerateEnvironment(metno_combined);
+  Check(
+      metno_combined_result.message_count == 19 &&
+          metno_combined_result.inspection["current_component_counts"]["u_49"]
+                  .asUInt64() == 2 &&
+          metno_combined_result.inspection["grib2_parameter_counts"]["0:6:1"]
+                  .asUInt64() == 2,
+      "MET Norway all-fields weather combines with an independent current "
+      "provider");
 #endif
   const auto environment_path = Temp("environment.grb");
   eg::EnvironmentRequest environment;
@@ -1426,7 +1596,8 @@ int main() {
   }
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
   for (const auto& path :
-       {ukv_pressure, ukv_temperature, ukv_speed, ukv_direction, ukv_output}) {
+       {ukv_pressure, ukv_temperature, ukv_speed, ukv_direction, ukv_output,
+        metno_source, metno_output, metno_current, metno_environment}) {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
   }

@@ -96,6 +96,13 @@ void SetDouble(codes_handle* handle, const char* key, double value) {
   Check(codes_set_double(handle, key, value), std::string("setting ") + key);
 }
 
+void SetString(codes_handle* handle, const char* key,
+               const std::string& value) {
+  std::size_t size = value.size();
+  Check(codes_set_string(handle, key, value.c_str(), &size),
+        std::string("setting ") + key);
+}
+
 std::optional<long> GetLong(codes_handle* handle, const char* key) {
   long value = 0;
   return codes_get_long(handle, key, &value) == 0 ? std::optional<long>{value}
@@ -249,6 +256,95 @@ GribNormalizeResult NormalizeGribStream(const std::filesystem::path& input,
   return {count, data.size(), clean.size(), skipped};
 }
 
+GribWriteSummary RepackGrib2ToSimplePacking(
+    const std::filesystem::path& input,
+    const std::filesystem::path& output) {
+  if (input == output)
+    throw ValidationError("GRIB2 repack input and output must differ");
+  std::filesystem::create_directories(
+      output.parent_path().empty() ? "." : output.parent_path());
+  FILE* raw = OpenFileForReading(input);
+  if (!raw)
+    throw ValidationError("unable to open GRIB2 for repacking: " +
+                          PathToUtf8(input));
+  struct FileCloser {
+    void operator()(FILE* value) const { std::fclose(value); }
+  };
+  std::unique_ptr<FILE, FileCloser> file(raw);
+  std::ofstream stream(output, std::ios::binary | std::ios::trunc);
+  if (!stream)
+    throw ValidationError("unable to create repacked GRIB2: " +
+                          PathToUtf8(output));
+  std::size_t count = 0;
+  while (true) {
+    int error = 0;
+    HandlePtr handle(
+        codes_handle_new_from_file(nullptr, file.get(), PRODUCT_GRIB, &error),
+        &codes_handle_delete);
+    if (!handle) {
+      if (error == CODES_SUCCESS || std::feof(file.get())) break;
+      Check(error, "reading GRIB2 message for repacking");
+    }
+    if (GetLong(handle.get(), "editionNumber").value_or(0) != 2)
+      throw ValidationError("simple-packing normalisation requires GRIB2");
+    auto values = GetValues(handle.get());
+    if (!values)
+      throw ValidationError("ecCodes could not decode GRIB2 values");
+    const auto short_name = GetString(handle.get(), "shortName");
+    const auto level_type = GetString(handle.get(), "typeOfLevel");
+    const auto category = GetLong(handle.get(), "parameterCategory");
+    const auto number = GetLong(handle.get(), "parameterNumber");
+    if (short_name == "tcc") {
+      if (!(category == 6 && number == 1)) {
+        const auto [minimum, maximum] =
+            std::minmax_element(values->begin(), values->end());
+        if (minimum != values->end() && *minimum >= 0.0 && *maximum <= 1.0)
+          for (double& value : *values) value *= 100.0;
+        SetLong(handle.get(), "parameterCategory", 6);
+        SetLong(handle.get(), "parameterNumber", 1);
+      }
+      SetString(handle.get(), "typeOfLevel", "entireAtmosphere");
+    }
+    if (short_name == "tp" &&
+        !(category == 1 && (number == 8 || number == 52))) {
+      for (double& value : *values) value *= 1000.0;
+      SetLong(handle.get(), "parameterCategory", 1);
+      SetLong(handle.get(), "parameterNumber", 8);
+    }
+    if ((short_name == "cape" || short_name == "mucape" ||
+         (category == 7 && number == 6)) &&
+        level_type != "surface")
+      SetString(handle.get(), "typeOfLevel", "surface");
+    if ((short_name == "gust" || (category == 2 && number == 22)) &&
+        level_type != "surface")
+      SetString(handle.get(), "typeOfLevel", "surface");
+    if (short_name == "z" && level_type &&
+        level_type->find("isobaric") != std::string::npos) {
+      constexpr double kStandardGravity = 9.80665;
+      for (double& value : *values) value /= kStandardGravity;
+      SetString(handle.get(), "shortName", "gh");
+    }
+    SetString(handle.get(), "packingType", "grid_simple");
+    SetLong(handle.get(), "bitsPerValue", 24);
+    Check(codes_set_double_array(handle.get(), "values", values->data(),
+                                 values->size()),
+          "repacking GRIB2 values");
+    const void* message = nullptr;
+    std::size_t length = 0;
+    Check(codes_get_message(handle.get(), &message, &length),
+          "encoding repacked GRIB2 message");
+    stream.write(static_cast<const char*>(message),
+                 static_cast<std::streamsize>(length));
+    if (!stream) throw ValidationError("writing repacked GRIB2 message failed");
+    ++count;
+  }
+  stream.close();
+  const auto scan = ScanGribMessages(output);
+  if (count == 0 || scan.message_count != count)
+    throw ValidationError("repacked GRIB2 message count mismatch");
+  return {count, output};
+}
+
 Json::Value InspectGrib(const std::filesystem::path& path) {
   const auto scan = ScanGribMessages(path);
   const auto data = ReadBytes(path);
@@ -342,6 +438,18 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
       message["level_type"] = *level_type;
     if (const auto level = GetLong(handle.get(), "level"))
       message["level"] = Json::Int64(*level);
+    if (const auto product_template =
+            GetLong(handle.get(), "productDefinitionTemplateNumber"))
+      message["product_definition_template"] =
+          Json::Int64(*product_template);
+    if (const auto step_type = GetString(handle.get(), "stepType"))
+      message["step_type"] = *step_type;
+    if (const auto start_step = GetLong(handle.get(), "startStep"))
+      message["start_step"] = Json::Int64(*start_step);
+    if (const auto end_step = GetLong(handle.get(), "endStep"))
+      message["end_step"] = Json::Int64(*end_step);
+    if (const auto packing = GetString(handle.get(), "packingType"))
+      message["packing_type"] = *packing;
 
     auto first_lon =
         GetDouble(handle.get(), "longitudeOfFirstGridPointInDegrees");
@@ -570,18 +678,50 @@ GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
           "ecCodes could not create regular_ll_sfc_grib2 sample");
     SetLong(handle.get(), "editionNumber", 2);
     SetLong(handle.get(), "discipline", 0);
-    SetLong(handle.get(), "productDefinitionTemplateNumber", 0);
+    SetLong(handle.get(), "productDefinitionTemplateNumber",
+            field.step_type ? 8 : 0);
     SetLong(handle.get(), "typeOfGeneratingProcess", 2);
     SetLong(handle.get(), "generatingProcessIdentifier", 255);
-    std::size_t short_name_length = field.short_name.size();
-    Check(codes_set_string(handle.get(), "shortName", field.short_name.c_str(),
-                           &short_name_length),
-          "setting GRIB2 shortName " + field.short_name);
+    if (field.short_name == "refc") {
+      // Composite reflectivity 0/16/196 is understood by xGRIB but is absent
+      // from some ecCodes centre tables used by the generic sample.
+      SetLong(handle.get(), "parameterCategory", 16);
+      SetLong(handle.get(), "parameterNumber", 196);
+    } else {
+      SetString(handle.get(), "shortName", field.short_name);
+    }
+    // ecCodes' generic sample maps "tp" to a local parameter definition.
+    // xGRIB and WMO GRIB2 use discipline 0/category 1/parameter 8 for total
+    // precipitation, so make that identity explicit for converted sources.
+    if (field.short_name == "tp") {
+      SetLong(handle.get(), "parameterCategory", 1);
+      SetLong(handle.get(), "parameterNumber", 8);
+    } else if (field.short_name == "tcc") {
+      // The generic sample otherwise selects a centre-local cloud parameter
+      // (192), while xGRIB consumes WMO total cloud cover 0/6/1.
+      SetLong(handle.get(), "parameterCategory", 6);
+      SetLong(handle.get(), "parameterNumber", 1);
+    }
+    if (field.type_of_level)
+      SetString(handle.get(), "typeOfLevel", *field.type_of_level);
+    if (field.level) SetDouble(handle.get(), "level", *field.level);
     SetLong(handle.get(), "dataDate",
             (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday);
     SetLong(handle.get(), "dataTime", tm.tm_hour * 100 + tm.tm_min);
     SetLong(handle.get(), "stepUnits", 1);
     SetLong(handle.get(), "forecastTime", field.forecast_hour);
+    if (field.step_type) {
+      if (field.interval_hours <= 0 ||
+          field.interval_hours > field.forecast_hour)
+        throw ValidationError("GRIB2 interval field " + field.short_name +
+                              " has an invalid interval");
+      SetString(handle.get(), "stepType", *field.step_type);
+      SetLong(handle.get(), "startStep",
+              field.forecast_hour - field.interval_hours);
+      SetLong(handle.get(), "endStep", field.forecast_hour);
+    } else if (field.interval_hours != 0) {
+      throw ValidationError("GRIB2 interval requires a step type");
+    }
     SetLong(handle.get(), "Ni", static_cast<long>(grid.nx()));
     SetLong(handle.get(), "Nj", static_cast<long>(grid.ny()));
     SetDouble(handle.get(), "latitudeOfFirstGridPointInDegrees",

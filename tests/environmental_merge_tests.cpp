@@ -82,6 +82,8 @@ int main(int argc, char** argv) {
   const auto current_matching = root / "current-matching.grb";
   const auto current_differing = root / "current-differing.grb";
   const auto combined = root / "combined-known.grb2";
+  const auto all_weather = root / "all-weather-known.grb2";
+  const auto combined_all = root / "combined-all-known.grb2";
 
   const std::vector<eg::Grib2Field> wind_fields{
       {0, "10u", {1, 2, 3, 4, 5, 6}, {}},
@@ -89,6 +91,29 @@ int main(int argc, char** argv) {
       {3, "10u", {11, 12, 13, 14, 15, 16}, {}},
       {3, "10v", {-11, -12, -13, -14, -15, -16}, {}}};
   eg::WriteRegularLatLonGrib2(grid, start, wind_fields, wind);
+  const auto values = [](double value) {
+    return std::vector<double>(6, value);
+  };
+  const std::vector<eg::Grib2Field> all_weather_fields{
+      {0, "10u", values(4.0), {}},
+      {0, "10v", values(-2.0), {}},
+      {3, "10u", values(5.0), {}},
+      {3, "10v", values(-3.0), {}},
+      {0, "gust", values(8.0), {}, "surface", 0.0},
+      {0, "tcc", values(65.0), {}, "entireAtmosphere", 0.0},
+      {0, "cape", values(500.0), {}, "surface", 0.0},
+      {0, "refc", values(24.0), {}, "entireAtmosphere", 0.0},
+      {0, "2r", values(75.0), {}, "heightAboveGround", 2.0},
+      {0, "prmsl", values(101325.0), {}, "meanSea", 0.0},
+      {0, "2t", values(285.0), {}, "heightAboveGround", 2.0},
+      {0, "u", values(12.0), {}, "isobaricInhPa", 850.0},
+      {0, "v", values(-6.0), {}, "isobaricInhPa", 850.0},
+      {0, "t", values(278.0), {}, "isobaricInhPa", 850.0},
+      {0, "r", values(55.0), {}, "isobaricInhPa", 850.0},
+      {0, "gh", values(1450.0), {}, "isobaricInhPa", 850.0},
+      {3, "tp", values(2.5), {}, "surface", 0.0, "accum", 3},
+  };
+  eg::WriteRegularLatLonGrib2(grid, start, all_weather_fields, all_weather);
   eg::WriteGrib1Currents({Current(grid, start, 0.0),
                           Current(grid, start + std::chrono::hours(3), 1.0)},
                          current_matching);
@@ -159,6 +184,29 @@ int main(int argc, char** argv) {
   }
   Check(identities.size() == 10,
         "combined output contains no unintended duplicate fields");
+
+  eg::EnvironmentalMergeRequest all_request;
+  all_request.weather = all_weather;
+  all_request.current = current_differing;
+  all_request.output = combined_all;
+  all_request.overwrite = true;
+  const auto all_result = eg::MergeEnvironmentalGribs(all_request);
+  Check(all_result.success && all_result.output_message_count == 23,
+        "all displayable weather fields combine with current records");
+  Check(all_result.output_inspection["grib2_parameter_counts"]["0:6:1"]
+                .asUInt64() == 1 &&
+            all_result.output_inspection["grib2_parameter_counts"]["0:1:8"]
+                    .asUInt64() == 1 &&
+            all_result.output_inspection["grib2_parameter_counts"]["0:7:6"]
+                    .asUInt64() == 1 &&
+            all_result.output_inspection["grib2_parameter_counts"]["0:16:196"]
+                    .asUInt64() == 1,
+        "combined all-data fixture retains xGRIB weather identities");
+  Check(all_result.output_inspection["current_component_counts"]["u_49"]
+                    .asUInt64() == 3 &&
+            all_result.output_inspection["current_component_counts"]["v_50"]
+                    .asUInt64() == 3,
+        "combined all-data fixture retains both current components");
 
   eg::EnvironmentalMergeRequest matching_request = request;
   matching_request.current = current_matching;
@@ -235,12 +283,14 @@ int main(int argc, char** argv) {
   manifest["grid"]["nx"] = 3;
   manifest["grid"]["ny"] = 2;
   manifest["fixtures"]["wind"] = wind.filename().string();
+  manifest["fixtures"]["all_weather"] = all_weather.filename().string();
   manifest["fixtures"]["current_matching"] =
       current_matching.filename().string();
   manifest["fixtures"]["current_differing"] =
       current_differing.filename().string();
   manifest["fixtures"]["corrupt"] = corrupt.filename().string();
   manifest["fixtures"]["combined"] = combined.filename().string();
+  manifest["fixtures"]["combined_all"] = combined_all.filename().string();
   WriteJson(root / "fixture-manifest.json", manifest);
   WriteJson(root / "merge-result.json",
             eg::EnvironmentalMergeResultJson(result));
