@@ -957,6 +957,11 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     metno.overwrite = true;
     metno.preset = request.weather_preset;
     metno.grid_spacing_deg = request.weather_grid_spacing_deg;
+    const auto output_directory =
+        request.output.parent_path().empty() ? std::filesystem::current_path()
+                                             : request.output.parent_path();
+    metno.cache_directory =
+        output_directory / ".xgrib-provider-cache" / "metno";
     if (request.metno_dataset_url)
       metno.dataset_url = *request.metno_dataset_url;
     const auto weather = GenerateMetNoNordic(metno, progress);

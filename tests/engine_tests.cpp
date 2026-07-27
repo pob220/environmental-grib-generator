@@ -344,7 +344,7 @@ void WriteMetNoFixture(const std::filesystem::path& path) {
   int file = -1;
   CreateNetCDF(path, &file, "create MET Norway fixture");
   int time_dim = -1, y_dim = -1, x_dim = -1;
-  Nc(nc_def_dim(file, "time", 2, &time_dim), "MET Norway time dimension");
+  Nc(nc_def_dim(file, "time", 6, &time_dim), "MET Norway time dimension");
   Nc(nc_def_dim(file, "y", 7, &y_dim), "MET Norway y dimension");
   Nc(nc_def_dim(file, "x", 7, &x_dim), "MET Norway x dimension");
   int time = -1, reference = -1, y = -1, x = -1, mapping = -1;
@@ -402,7 +402,8 @@ void WriteMetNoFixture(const std::filesystem::path& path) {
       std::chrono::duration_cast<std::chrono::seconds>(
           reference_time.time_since_epoch())
           .count());
-  const double times[] = {epoch, epoch + 3600.0};
+  const double times[] = {epoch,           epoch + 3600.0,  epoch + 7200.0,
+                          epoch + 10800.0, epoch + 14400.0, epoch + 18000.0};
   const double axis[] = {-300000.0, -200000.0, -100000.0, 0.0,
                          100000.0,  200000.0,  300000.0};
   Nc(nc_put_var_double(file, time, times), "MET Norway times");
@@ -412,7 +413,7 @@ void WriteMetNoFixture(const std::filesystem::path& path) {
   const std::array<double, 8> values{
       285.0, 1.0, 270.0, 10.0, 15.0, 0.6, 101500.0, 0.75};
   for (std::size_t field = 0; field < fields.size(); ++field) {
-    std::vector<double> data(2 * 7 * 7, values[field]);
+    std::vector<double> data(6 * 7 * 7, values[field]);
     Nc(nc_put_var_double(file, fields[field], data.data()),
        "MET Norway field values");
   }
@@ -1218,7 +1219,7 @@ int main() {
   // fixture, matching the bitmap behavior used by live UKV and MET Norway.
   ukv_request.bbox = {-12.0, 48.0, 4.0, 62.0};
   ukv_request.output = ukv_output;
-  ukv_request.hours = 0;
+  ukv_request.hours = 1;
   ukv_request.cycle = "00";
   ukv_request.date = "20260703";
   ukv_request.grid_spacing_deg = 0.1;
@@ -1237,12 +1238,15 @@ int main() {
       });
   const auto ukv_inspection = eg::InspectGrib(ukv_output);
   Check(
-      ukv.message_count == 4 &&
-          ukv_inspection["short_name_counts"]["10u"].asUInt64() == 1 &&
+      ukv.message_count == 8 &&
+          ukv_inspection["short_name_counts"]["10u"].asUInt64() == 2 &&
           ukv_inspection["messages"][0]["values"]["missing_count"].asUInt64() >
               0 &&
-          std::stoull(ukv.variables_levels.at("partial_field_count")) == 4 &&
-          std::stod(ukv.variables_levels.at("maximum_missing_percent")) > 0.5,
+          std::stoull(ukv.variables_levels.at("partial_field_count")) == 8 &&
+          std::stod(ukv.variables_levels.at("maximum_missing_percent")) > 0.5 &&
+          ukv.variables_levels.at("regrid_plan_count") == "1" &&
+          std::stoull(ukv.variables_levels.at("regrid_workers")) > 0 &&
+          std::stod(ukv.variables_levels.at("timing_total_seconds")) >= 0.0,
       "UKV projected NetCDF regrid and meteorological wind conversion");
   const auto metno_source = Temp("metno.nc");
   const auto metno_output = Temp("metno.grb2");
@@ -1252,12 +1256,16 @@ int main() {
   // projected fixture. The covered cells must be retained using GRIB bitmaps.
   metno_request.bbox = {10.0, 60.0, 20.0, 66.0};
   metno_request.output = metno_output;
-  metno_request.hours = 1;
+  // Six hourly records cross the four-time conversion batch boundary.
+  metno_request.hours = 5;
   metno_request.step_hours = 1;
   metno_request.preset = "all";
   metno_request.grid_spacing_deg = 0.25;
   metno_request.dataset_url = eg::PathToUtf8(metno_source);
   metno_request.overwrite = true;
+  const auto metno_cache = Temp("metno-cache");
+  std::filesystem::remove_all(metno_cache);
+  metno_request.cache_directory = metno_cache;
   const auto metno = eg::GenerateMetNoNordic(metno_request);
   const auto metno_inspection = eg::InspectGrib(metno_output);
   bool metno_precipitation_interval = false;
@@ -1266,10 +1274,10 @@ int main() {
     if (message["parameter_category"].asInt() == 1 &&
         message["parameter_number"].asInt() == 8) {
       metno_precipitation_interval =
-          message["product_definition_template"].asInt() == 8 &&
-          message["step_type"].asString() == "accum" &&
-          message["start_step"].asInt() == 0 &&
-          message["end_step"].asInt() == 1;
+          metno_precipitation_interval ||
+          (message["product_definition_template"].asInt() == 8 &&
+           message["step_type"].asString() == "accum" &&
+           message["end_step"].asInt() - message["start_step"].asInt() == 1);
     }
     if (message["short_name"].asString() == "2t" &&
         message["values"]["missing_count"].asUInt64() > 0 &&
@@ -1278,30 +1286,66 @@ int main() {
       metno_partial_temperature = true;
   }
   const bool metno_ok =
-      metno.message_count == 15 &&
-      metno_inspection["short_name_counts"]["10u"].asUInt64() == 2 &&
-      metno_inspection["grib2_parameter_counts"]["0:1:8"].asUInt64() == 1 &&
-      metno_inspection["short_name_counts"]["2r"].asUInt64() == 2 &&
+      metno.message_count == 47 &&
+      metno_inspection["short_name_counts"]["10u"].asUInt64() == 6 &&
+      metno_inspection["grib2_parameter_counts"]["0:1:8"].asUInt64() == 5 &&
+      metno_inspection["short_name_counts"]["2r"].asUInt64() == 6 &&
       metno_precipitation_interval && metno_partial_temperature &&
-      std::stoull(metno.variables_levels.at("partial_field_count")) == 15 &&
-      std::stod(metno.variables_levels.at("maximum_missing_percent")) > 0.5;
-  Check(metno_ok,
-        "MET Norway local NetCDF all-fields conversion");
+      std::stoull(metno.variables_levels.at("partial_field_count")) == 47 &&
+      std::stod(metno.variables_levels.at("maximum_missing_percent")) > 0.5 &&
+      metno.variables_levels.at("time_batch_size") == "4" &&
+      metno.variables_levels.at("source_read_strategy") ==
+          "strided-local-batch" &&
+      metno.variables_levels.at("remote_read_requests") == "16" &&
+      metno.variables_levels.at("source_field_slices") == "47" &&
+      metno.variables_levels.at("cache_hit") == "false" &&
+      metno.variables_levels.at("cache_saved") == "true" &&
+      std::stoull(metno.variables_levels.at("regrid_plan_cells")) > 0 &&
+      std::stoull(metno.variables_levels.at("regrid_workers")) > 0 &&
+      std::stod(metno.variables_levels.at("timing_total_seconds")) >= 0.0;
+  if (!metno_ok) {
+    std::cerr << "MET Norway messages=" << metno.message_count
+              << " counts=" << metno_inspection["short_name_counts"]
+              << " metadata=";
+    for (const auto& [key, value] : metno.variables_levels)
+      std::cerr << key << '=' << value << ' ';
+    std::cerr << '\n';
+  }
+  Check(metno_ok, "MET Norway local NetCDF all-fields conversion");
+  const auto metno_cached_output = Temp("metno-cached.grb2");
+  metno_request.output = metno_cached_output;
+  const auto metno_cached = eg::GenerateMetNoNordic(metno_request);
+  Check(metno_cached.variables_levels.at("cache_hit") == "true" &&
+            metno_cached.message_count == metno.message_count &&
+            bytes_from(metno_cached_output) == bytes_from(metno_output),
+        "MET Norway completed-cycle cache is validated and byte-identical");
+  for (const auto& entry : std::filesystem::directory_iterator(metno_cache))
+    if (entry.path().extension() == ".grb2")
+      std::filesystem::resize_file(
+          entry.path(), std::filesystem::file_size(entry.path()) - 1);
+  const auto metno_recovered_output = Temp("metno-cache-recovered.grb2");
+  metno_request.output = metno_recovered_output;
+  const auto metno_recovered = eg::GenerateMetNoNordic(metno_request);
+  Check(metno_recovered.variables_levels.at("cache_hit") == "false" &&
+            metno_recovered.variables_levels.at("cache_saved") == "true" &&
+            bytes_from(metno_recovered_output) == bytes_from(metno_output),
+        "MET Norway corrupt cache is rejected and rebuilt without data loss");
   const auto metno_current = Temp("metno-current.grb");
   const auto metno_environment = Temp("metno-environment.grb2");
   const auto metno_grid =
       eg::BuildRegularGrid(metno_request.bbox, metno_request.grid_spacing_deg);
-  eg::CurrentGrid metno_current_0{
-      eg::ParseUtcDateTime("2026-07-27T00:00:00Z"), metno_grid,
-      std::vector<double>(metno_grid.size(), 0.2),
-      std::vector<double>(metno_grid.size(), -0.1), {}};
+  eg::CurrentGrid metno_current_0{eg::ParseUtcDateTime("2026-07-27T00:00:00Z"),
+                                  metno_grid,
+                                  std::vector<double>(metno_grid.size(), 0.2),
+                                  std::vector<double>(metno_grid.size(), -0.1),
+                                  {}};
   eg::CurrentGrid metno_current_1 = metno_current_0;
   metno_current_1.time += std::chrono::hours(1);
   eg::WriteGrib1Currents({metno_current_0, metno_current_1}, metno_current);
   eg::EnvironmentRequest metno_combined;
   metno_combined.bbox = metno_request.bbox;
   metno_combined.start = metno_current_0.time;
-  metno_combined.hours = 1;
+  metno_combined.hours = 5;
   metno_combined.step_hours = 1;
   metno_combined.weather_provider = "metno_nordic";
   metno_combined.weather_preset = "all";
@@ -1311,16 +1355,24 @@ int main() {
   metno_combined.current_file = metno_current;
   metno_combined.output = metno_environment;
   metno_combined.overwrite = true;
-  const auto metno_combined_result =
-      eg::GenerateEnvironment(metno_combined);
-  Check(
-      metno_combined_result.message_count == 19 &&
-          metno_combined_result.inspection["current_component_counts"]["u_49"]
-                  .asUInt64() == 2 &&
-          metno_combined_result.inspection["grib2_parameter_counts"]["0:6:1"]
-                  .asUInt64() == 2,
-      "MET Norway all-fields weather combines with an independent current "
-      "provider");
+  const auto metno_combined_result = eg::GenerateEnvironment(metno_combined);
+  const bool metno_combined_ok =
+      metno_combined_result.message_count == 51 &&
+      metno_combined_result.inspection["current_component_counts"]["u_49"]
+              .asUInt64() == 2 &&
+      metno_combined_result.inspection["grib2_parameter_counts"]["0:6:1"]
+              .asUInt64() == 6;
+  if (!metno_combined_ok)
+    std::cerr
+        << "MET Norway combined messages="
+        << metno_combined_result.message_count << " current="
+        << metno_combined_result.inspection["current_component_counts"]["u_49"]
+        << " cloud="
+        << metno_combined_result.inspection["grib2_parameter_counts"]["0:6:1"]
+        << '\n';
+  Check(metno_combined_ok,
+        "MET Norway all-fields weather combines with an independent current "
+        "provider");
 #endif
   const auto environment_path = Temp("environment.grb");
   eg::EnvironmentRequest environment;

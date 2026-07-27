@@ -110,6 +110,16 @@ GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
                                          TimePoint reference,
                                          const std::vector<Grib2Field>& fields,
                                          const std::filesystem::path& output);
+/** Encode one ordered chunk of a regular-lat/lon GRIB2 stream.
+ *
+ * The first chunk must use append=false; subsequent chunks use append=true.
+ * Unlike WriteRegularLatLonGrib2 this deliberately does not rescan the whole
+ * output after every chunk. The caller validates the completed stream once.
+ */
+GribWriteSummary WriteRegularLatLonGrib2Chunk(
+    const RegularGrid& grid, TimePoint reference,
+    const std::vector<Grib2Field>& fields, const std::filesystem::path& output,
+    bool append);
 MergeStreamsResult MergeGribStreams(
     const std::vector<std::pair<std::string, std::filesystem::path>>& inputs,
     const std::filesystem::path& output, bool overwrite = false);

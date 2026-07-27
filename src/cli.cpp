@@ -232,6 +232,11 @@ int GenerateWeather(const std::vector<std::string>& args) {
     metno.dry_run = request.dry_run;
     metno.preset = request.preset;
     if (grid_spacing) metno.grid_spacing_deg = *grid_spacing;
+    metno.cache_directory =
+        (request.output.parent_path().empty()
+             ? std::filesystem::current_path()
+             : request.output.parent_path()) /
+        ".xgrib-provider-cache" / "metno";
     PrintJson(eg::WeatherResultJson(eg::GenerateMetNoNordic(metno)));
   } else if (provider == "copernicus_global_waves") {
     if (!start)

@@ -646,10 +646,10 @@ GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
   return {count, output};
 }
 
-GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
-                                         TimePoint reference,
-                                         const std::vector<Grib2Field>& fields,
-                                         const std::filesystem::path& output) {
+GribWriteSummary WriteRegularLatLonGrib2Chunk(
+    const RegularGrid& grid, TimePoint reference,
+    const std::vector<Grib2Field>& fields, const std::filesystem::path& output,
+    bool append) {
   if (fields.empty()) throw ValidationError("no GRIB2 fields were provided");
   if (grid.nx() < 2 || grid.ny() < 2)
     throw ValidationError("GRIB2 output requires at least a 2 x 2 grid");
@@ -658,7 +658,9 @@ GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
   const std::tm tm = UtcTime(raw_time);
   std::filesystem::create_directories(
       output.parent_path().empty() ? "." : output.parent_path());
-  std::ofstream stream(output, std::ios::binary | std::ios::trunc);
+  const auto mode =
+      std::ios::binary | (append ? std::ios::app : std::ios::trunc);
+  std::ofstream stream(output, mode);
   if (!stream)
     throw ValidationError("unable to create GRIB2 output: " + PathToUtf8(output));
   std::size_t count = 0;
@@ -765,10 +767,19 @@ GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
     ++count;
   }
   stream.close();
-  const auto scan = ScanGribMessages(output);
-  if (scan.message_count != count)
-    throw ValidationError("written GRIB2 message count mismatch");
   return {count, output};
+}
+
+GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,
+                                         TimePoint reference,
+                                         const std::vector<Grib2Field>& fields,
+                                         const std::filesystem::path& output) {
+  const auto written =
+      WriteRegularLatLonGrib2Chunk(grid, reference, fields, output, false);
+  const auto scan = ScanGribMessages(output);
+  if (scan.message_count != written.message_count)
+    throw ValidationError("written GRIB2 message count mismatch");
+  return written;
 }
 
 MergeStreamsResult MergeGribStreams(

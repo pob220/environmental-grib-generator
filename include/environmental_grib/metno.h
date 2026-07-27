@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "environmental_grib/weather.h"
@@ -22,6 +23,10 @@ struct MetNoRequest {
   std::string preset{"routing"};
   double grid_spacing_deg{0.025};
   std::string dataset_url{kMetNoNordicLatestDataset};
+  // Optional persistent cache for completed, cycle-keyed weather GRIBs.
+  // Cache entries are validated before reuse and never bypass opening the
+  // latest dataset to discover its current forecast reference time.
+  std::optional<std::filesystem::path> cache_directory;
 };
 
 std::vector<int> MetNoForecastHours(int hours, int step_hours);
