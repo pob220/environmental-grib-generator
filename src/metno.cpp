@@ -428,7 +428,12 @@ WeatherGenerateResult GenerateMetNoNordic(const MetNoRequest& request,
       SliceAxis(source_y, y_limits.first->second, y_limits.second->second);
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   std::vector<Grib2Field> output_fields;
-  const auto regrid = [&](const SourceField& field, double scale = 1.0) {
+  std::size_t partial_field_count = 0;
+  double maximum_missing_percent = 0.0;
+  bool reported_partial_coverage = false;
+  const auto regrid = [&](const SourceField& field,
+                          const std::string& short_name, int forecast_hour,
+                          double scale = 1.0) {
     std::pair<std::vector<double>, std::vector<std::uint8_t>> result{
         std::vector<double>(grid.size()),
         std::vector<std::uint8_t>(grid.size())};
@@ -441,12 +446,32 @@ WeatherGenerateResult GenerateMetNoNordic(const MetNoRequest& request,
         result.first[index] = interpolated.first * scale;
         result.second[index] = !interpolated.second;
       }
-    const auto missing =
+    const auto missing = static_cast<std::size_t>(
         std::count_if(result.second.begin(), result.second.end(),
-                      [](auto value) { return value != 0; });
-    if (100.0 * missing / grid.size() > 0.5)
-      throw ValidationError(
-          "MET Norway regridded field has more than 0.5% missing cells");
+                      [](auto value) { return value != 0; }));
+    if (missing == grid.size())
+      throw ValidationError("MET Norway field " + short_name +
+                            " at forecast hour " +
+                            std::to_string(forecast_hour) +
+                            " has no coverage in the requested bbox");
+    if (missing > 0) {
+      ++partial_field_count;
+      const double missing_percent = 100.0 * static_cast<double>(missing) /
+                                     static_cast<double>(grid.size());
+      maximum_missing_percent =
+          std::max(maximum_missing_percent, missing_percent);
+      if (progress && !reported_partial_coverage) {
+        Json::Value details;
+        details["field"] = short_name;
+        details["hour"] = forecast_hour;
+        details["missingCells"] = Json::UInt64(missing);
+        details["gridCells"] = Json::UInt64(grid.size());
+        details["missingPercent"] = missing_percent;
+        progress("retaining partial MET Norway coverage with a GRIB bitmap",
+                 details);
+        reported_partial_coverage = true;
+      }
+    }
     return result;
   };
   for (const int hour : requested_hours) {
@@ -465,7 +490,7 @@ WeatherGenerateResult GenerateMetNoNordic(const MetNoRequest& request,
                             std::optional<double> level = std::nullopt,
                             std::optional<std::string> step_type = std::nullopt,
                             int interval_hours = 0) {
-      auto [values, mask] = regrid(source, scale);
+      auto [values, mask] = regrid(source, short_name, hour, scale);
       output_fields.push_back({hour, short_name, std::move(values),
                                std::move(mask), std::move(level_type), level,
                                std::move(step_type), interval_hours});
@@ -519,6 +544,8 @@ WeatherGenerateResult GenerateMetNoNordic(const MetNoRequest& request,
       {request.dataset_url},
       {{"weather_grid_spacing_deg", std::to_string(request.grid_spacing_deg)},
        {"source_grid", "MET Norway postprocessed Nordic 1 km"},
+       {"partial_field_count", std::to_string(partial_field_count)},
+       {"maximum_missing_percent", std::to_string(maximum_missing_percent)},
        {"licence", "CC BY 4.0 / Norwegian Licence for Open Government Data"}}};
 }
 

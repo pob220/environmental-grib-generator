@@ -160,18 +160,18 @@ ProjectedField ReadProjectedField(
   std::vector<std::size_t> start(dims.size(), 0), count(dims.size(), 1);
   if (pressure_level_pa) {
     bool selected = false;
-    for (std::size_t dimension_index = 0;
-         dimension_index + 2 < dims.size(); ++dimension_index) {
+    for (std::size_t dimension_index = 0; dimension_index + 2 < dims.size();
+         ++dimension_index) {
       const int dimension = dims[dimension_index];
       for (int id = 0; id < variables; ++id) {
         const auto coordinate_dims = Dims(file.id(), id);
-        if (coordinate_dims.size() != 1 ||
-            coordinate_dims.front() != dimension)
+        if (coordinate_dims.size() != 1 || coordinate_dims.front() != dimension)
           continue;
         char variable_name[NC_MAX_NAME + 1]{};
         Nc(nc_inq_varname(file.id(), id, variable_name),
            "reading UKV coordinate name");
-        const auto standard_name = AttributeText(file.id(), id, "standard_name");
+        const auto standard_name =
+            AttributeText(file.id(), id, "standard_name");
         const auto units = AttributeText(file.id(), id, "units");
         if (standard_name != "air_pressure" &&
             std::string(variable_name).find("pressure") == std::string::npos &&
@@ -469,10 +469,9 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
             out.write(reinterpret_cast<const char*>(bytes.data()),
                       static_cast<std::streamsize>(bytes.size()));
             if (!out) throw ValidationError("writing UKV source file failed");
-            return DownloadedField{
-                {field_request.hour, field_request.token},
-                field_request.path,
-                url};
+            return DownloadedField{{field_request.hour, field_request.token},
+                                   field_request.path,
+                                   url};
           });
       for (auto& item : downloaded) {
         files[item.key] = std::move(item.path);
@@ -496,6 +495,9 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
   std::lock_guard netcdf_lock(NetcdfApiMutex());
   const auto grid = BuildRegularGrid(request.bbox, request.grid_spacing_deg);
   std::vector<Grib2Field> output_fields;
+  std::size_t partial_field_count = 0;
+  double maximum_missing_percent = 0.0;
+  bool reported_partial_coverage = false;
   for (int hour : hours) {
     const auto source = [&](const std::string& token,
                             std::optional<double> pressure = std::nullopt) {
@@ -506,7 +508,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
     Projection projection(speed);
     const auto regrid = [&](const ProjectedField& field,
-                            double scale = 1.0) {
+                            const std::string& short_name, double scale = 1.0) {
       std::pair<std::vector<double>, std::vector<std::uint8_t>> result{
           std::vector<double>(grid.size()),
           std::vector<std::uint8_t>(grid.size())};
@@ -519,21 +521,41 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
           result.first[index] = value.first * scale;
           result.second[index] = !value.second;
         }
-      const auto missing =
+      const auto missing = static_cast<std::size_t>(
           std::count_if(result.second.begin(), result.second.end(),
-                        [](auto value) { return value != 0; });
-      if (100.0 * missing / grid.size() > 0.5)
-        throw ValidationError(
-            "UKV regridded field has more than 0.5% missing cells");
+                        [](auto value) { return value != 0; }));
+      if (missing == grid.size())
+        throw ValidationError("UKV field " + short_name + " at forecast hour " +
+                              std::to_string(hour) +
+                              " has no coverage in the requested bbox");
+      if (missing > 0) {
+        ++partial_field_count;
+        const double missing_percent = 100.0 * static_cast<double>(missing) /
+                                       static_cast<double>(grid.size());
+        maximum_missing_percent =
+            std::max(maximum_missing_percent, missing_percent);
+        if (progress && !reported_partial_coverage) {
+          Json::Value details;
+          details["field"] = short_name;
+          details["hour"] = hour;
+          details["missingCells"] = Json::UInt64(missing);
+          details["gridCells"] = Json::UInt64(grid.size());
+          details["missingPercent"] = missing_percent;
+          progress("retaining partial UKV coverage with a GRIB bitmap",
+                   details);
+          reported_partial_coverage = true;
+        }
+      }
       return result;
     };
     const auto append = [&](const std::string& short_name,
                             const ProjectedField& field, double scale = 1.0,
-                            std::optional<std::string> level_type = std::nullopt,
+                            std::optional<std::string> level_type =
+                                std::nullopt,
                             std::optional<double> level = std::nullopt,
                             std::optional<std::string> step_type = std::nullopt,
                             int interval_hours = 0) {
-      auto [values, mask] = regrid(field, scale);
+      auto [values, mask] = regrid(field, short_name, scale);
       Grib2Field output;
       output.forecast_hour = hour;
       output.short_name = short_name;
@@ -547,22 +569,19 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
     };
     const auto append_wind =
         [&](const ProjectedField& wind_speed,
-            const ProjectedField& wind_direction,
-            const std::string& u_name, const std::string& v_name,
+            const ProjectedField& wind_direction, const std::string& u_name,
+            const std::string& v_name,
             std::optional<std::string> level_type = std::nullopt,
             std::optional<double> level = std::nullopt) {
           ProjectedField source_u = wind_speed, source_v = wind_speed;
           for (std::size_t i = 0; i < wind_speed.values.size(); ++i) {
-            const bool missing =
-                wind_speed.mask[i] || wind_direction.mask[i];
+            const bool missing = wind_speed.mask[i] || wind_direction.mask[i];
             source_u.mask[i] = source_v.mask[i] = missing;
             if (!missing) {
               const double radians =
                   wind_direction.values[i] * std::numbers::pi / 180.0;
-              source_u.values[i] =
-                  -wind_speed.values[i] * std::sin(radians);
-              source_v.values[i] =
-                  -wind_speed.values[i] * std::cos(radians);
+              source_u.values[i] = -wind_speed.values[i] * std::sin(radians);
+              source_v.values[i] = -wind_speed.values[i] * std::cos(radians);
             }
           }
           append(u_name, source_u, 1.0, level_type, level);
@@ -574,15 +593,15 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
       append("2t", source("temperature_at_screen_level"));
     }
     if (request.preset == "marine" || request.preset == "all") {
-      append("gust", source("wind_gust_at_10m"), 1.0,
-             std::string("surface"), 0.0);
+      append("gust", source("wind_gust_at_10m"), 1.0, std::string("surface"),
+             0.0);
       append("tcc", source("cloud_amount_of_total_cloud"), 100.0,
              std::string("entireAtmosphere"), 0.0);
       if (hour > 0) {
         const int interval = hour <= 54 ? 1 : 3;
-        const std::string token =
-            interval == 1 ? "precipitation_accumulation-PT01H"
-                          : "precipitation_accumulation-PT03H";
+        const std::string token = interval == 1
+                                      ? "precipitation_accumulation-PT01H"
+                                      : "precipitation_accumulation-PT03H";
         append("tp", source(token), 1000.0, std::string("surface"), 0.0,
                std::string("accum"), interval);
       }
@@ -591,8 +610,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
       append("cape", source("CAPE_surface"), 1.0, std::string("surface"), 0.0);
       append("r", source("relative_humidity_at_screen_level"), 100.0,
              std::string("heightAboveGround"), 2.0);
-      for (const double pressure_pa :
-           {85000.0, 70000.0, 50000.0, 30000.0}) {
+      for (const double pressure_pa : {85000.0, 70000.0, 50000.0, 30000.0}) {
         const double pressure_hpa = pressure_pa / 100.0;
         const auto upper_speed =
             source("wind_speed_on_pressure_levels", pressure_pa);
@@ -602,8 +620,7 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
                     std::string("isobaricInhPa"), pressure_hpa);
         append("t", source("temperature_on_pressure_levels", pressure_pa), 1.0,
                std::string("isobaricInhPa"), pressure_hpa);
-        append("r",
-               source("relative_humidity_on_pressure_levels", pressure_pa),
+        append("r", source("relative_humidity_on_pressure_levels", pressure_pa),
                100.0, std::string("isobaricInhPa"), pressure_hpa);
         append("gh",
                source("geopotential_height_on_pressure_levels", pressure_pa),
@@ -634,7 +651,9 @@ WeatherGenerateResult GenerateUkv(const UkvRequest& request, HttpGet download,
       inspection["message_count"].asUInt64(),
       inspection,
       urls,
-      {{"weather_grid_spacing_deg", std::to_string(request.grid_spacing_deg)}}};
+      {{"weather_grid_spacing_deg", std::to_string(request.grid_spacing_deg)},
+       {"partial_field_count", std::to_string(partial_field_count)},
+       {"maximum_missing_percent", std::to_string(maximum_missing_percent)}}};
 }
 
 }  // namespace environmental_grib

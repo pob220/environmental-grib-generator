@@ -1214,7 +1214,9 @@ int main() {
     return bytes;
   };
   eg::UkvRequest ukv_request;
-  ukv_request.bbox = {-5.8, 53.0, -5.2, 53.5};
+  // Exercise a regional request which only partly overlaps the projected
+  // fixture, matching the bitmap behavior used by live UKV and MET Norway.
+  ukv_request.bbox = {-12.0, 48.0, 4.0, 62.0};
   ukv_request.output = ukv_output;
   ukv_request.hours = 0;
   ukv_request.cycle = "00";
@@ -1233,16 +1235,22 @@ int main() {
           return bytes_from(ukv_direction);
         throw std::runtime_error("unexpected UKV URL");
       });
+  const auto ukv_inspection = eg::InspectGrib(ukv_output);
   Check(
       ukv.message_count == 4 &&
-          eg::InspectGrib(ukv_output)["short_name_counts"]["10u"].asUInt64() ==
-              1,
+          ukv_inspection["short_name_counts"]["10u"].asUInt64() == 1 &&
+          ukv_inspection["messages"][0]["values"]["missing_count"].asUInt64() >
+              0 &&
+          std::stoull(ukv.variables_levels.at("partial_field_count")) == 4 &&
+          std::stod(ukv.variables_levels.at("maximum_missing_percent")) > 0.5,
       "UKV projected NetCDF regrid and meteorological wind conversion");
   const auto metno_source = Temp("metno.nc");
   const auto metno_output = Temp("metno.grb2");
   WriteMetNoFixture(metno_source);
   eg::MetNoRequest metno_request;
-  metno_request.bbox = {14.5, 62.5, 15.5, 63.5};
+  // This regular-lat/lon rectangle crosses the north and south edges of the
+  // projected fixture. The covered cells must be retained using GRIB bitmaps.
+  metno_request.bbox = {10.0, 60.0, 20.0, 66.0};
   metno_request.output = metno_output;
   metno_request.hours = 1;
   metno_request.step_hours = 1;
@@ -1253,6 +1261,7 @@ int main() {
   const auto metno = eg::GenerateMetNoNordic(metno_request);
   const auto metno_inspection = eg::InspectGrib(metno_output);
   bool metno_precipitation_interval = false;
+  bool metno_partial_temperature = false;
   for (const auto& message : metno_inspection["messages"]) {
     if (message["parameter_category"].asInt() == 1 &&
         message["parameter_number"].asInt() == 8) {
@@ -1262,13 +1271,20 @@ int main() {
           message["start_step"].asInt() == 0 &&
           message["end_step"].asInt() == 1;
     }
+    if (message["short_name"].asString() == "2t" &&
+        message["values"]["missing_count"].asUInt64() > 0 &&
+        message["values"]["missing_count"].asUInt64() <
+            message["values"]["count"].asUInt64())
+      metno_partial_temperature = true;
   }
   const bool metno_ok =
       metno.message_count == 15 &&
       metno_inspection["short_name_counts"]["10u"].asUInt64() == 2 &&
       metno_inspection["grib2_parameter_counts"]["0:1:8"].asUInt64() == 1 &&
       metno_inspection["short_name_counts"]["2r"].asUInt64() == 2 &&
-      metno_precipitation_interval;
+      metno_precipitation_interval && metno_partial_temperature &&
+      std::stoull(metno.variables_levels.at("partial_field_count")) == 15 &&
+      std::stod(metno.variables_levels.at("maximum_missing_percent")) > 0.5;
   Check(metno_ok,
         "MET Norway local NetCDF all-fields conversion");
   const auto metno_current = Temp("metno-current.grb");

@@ -24,7 +24,8 @@ required where both implementations use the same packing.
 | ICON-EU | Implemented | URL/cadence/bzip2 fixtures |
 | ECMWF IFS/AIFS | Implemented | URL/index/range/field fixtures; AIFS remains experimental upstream |
 | Copernicus Global Waves | Implemented | Local NetCDF and remote packed-Zarr fixtures plus authenticated live 2 x 2 generation through the official waw4 fallback; ecCodes validated three GRIB2 wave messages. |
-| UKMO UKV | Implemented when PROJ is available | Projected fixtures and bounded live differential run (maximum field difference 0.0028 in source units) |
+| UKMO UKV | Implemented when PROJ is available | Projected fixtures, partial-footprint GRIB bitmap coverage and bounded live differential run (maximum field difference 0.0028 in source units) |
+| MET Norway Nordic | Implemented when PROJ is available | Projected all-field fixture with partial-footprint bitmaps plus live North Sea Routing and all-field generation |
 | TPXO cache prediction | Implemented | 15-constituent major/minor pyTMD differential test |
 | TPXO10 Atlas v2 direct model | Implemented | Complete synthetic ATLAS directory differential test |
 | TPXO cache preparation | Implemented | C++ cache loaded/predicted by Python with exact result parity |
