@@ -10,7 +10,7 @@
 namespace environmental_grib {
 
 inline constexpr int kJobSchemaVersion = 1;
-inline constexpr const char* kGeneratorVersion = "0.1.4";
+inline constexpr const char* kGeneratorVersion = "0.1.5";
 
 struct GeneratorJob {
   int schema_version{kJobSchemaVersion};

@@ -467,7 +467,7 @@ std::size_t ExpectedMessageCount(const std::vector<int>& hours,
 std::string CacheFingerprint(const MetNoRequest& request, TimePoint reference,
                              const std::vector<int>& hours) {
   std::ostringstream value;
-  value << "metno-weather-cache-v1|generator-0.1.4|"
+  value << "metno-weather-cache-v1|generator-0.1.5|"
         << FormatUtcDateTime(reference) << '|' << request.dataset_url << '|'
         << std::setprecision(17) << request.bbox.west << ','
         << request.bbox.south << ',' << request.bbox.east << ','
