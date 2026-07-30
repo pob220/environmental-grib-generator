@@ -706,6 +706,13 @@ int main() {
   const auto start = eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
   Check(eg::FormatUtcDateTime(start) == "2026-07-01T00:00:00Z",
         "UTC round trip");
+  Check(eg::FormatUtcDateTime(
+            eg::ParseUtcDateTime("2026-07-01T01:00:00+01:00")) ==
+            "2026-07-01T00:00:00Z",
+        "timezone-qualified provider input normalizes to UTC");
+  ExpectValidation(
+      [] { eg::ParseUtcDateTime("2026-07-01T01:00:00"); },
+      "timezone-free provider input rejected");
   Check(eg::BuildTimeSequence(start, 6, 3).size() == 3, "time sequence count");
   ExpectValidation([&] { eg::BuildTimeSequence(start, 5, 2); },
                    "non-divisible time range rejected");
