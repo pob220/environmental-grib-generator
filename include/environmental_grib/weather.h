@@ -100,12 +100,15 @@ std::string BuildGfsFilterUrl(const GFSCycle& cycle, int forecast_hour,
                               const std::map<std::string, std::string>& fields);
 std::string BuildGfsWaveFilterUrl(const GFSCycle& cycle, int forecast_hour,
                                   const BoundingBox& bbox);
+std::string BuildGfsWaveFileUrl(const GFSCycle& cycle, int forecast_hour);
+std::string BuildGfsWaveIndexUrl(const GFSCycle& cycle, int forecast_hour);
 std::vector<unsigned char> CurlHttpGet(const std::string& url,
                                        double timeout_seconds);
 WeatherGenerateResult GenerateGfs(const GFSRequest& request,
                                   HttpGet http_get = {},
                                   std::optional<TimePoint> now = std::nullopt,
-                                  ProgressCallback progress = {});
+                                  ProgressCallback progress = {},
+                                  HttpGetRange http_get_range = {});
 std::vector<int> DwdIconEuForecastHourSequence(int hours, int step_hours);
 std::map<std::string, std::string> DwdIconEuFieldsForPreset(
     const std::string& preset);

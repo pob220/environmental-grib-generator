@@ -934,6 +934,70 @@ int main() {
   Check(generated_weather.message_count == 6 &&
             generated_weather.urls.size() == 3,
         "GFS atomic segment assembly with injectable HTTP");
+  eg::GFSRequest readiness_request = weather_request;
+  readiness_request.output = Temp("gfs-readiness.grb");
+  readiness_request.cycle = "auto";
+  readiness_request.date = std::nullopt;
+  readiness_request.max_auto_cycles = 2;
+  std::atomic<int> incomplete_cycle_requests{0};
+  std::atomic<int> complete_cycle_requests{0};
+  const auto readiness_result = eg::GenerateGfs(
+      readiness_request,
+      [&](const std::string& url, double) {
+        if (url.find("gfs.20260702%2F12") != std::string::npos) {
+          ++incomplete_cycle_requests;
+          throw eg::HttpDownloadError("forecast file not yet available", false);
+        }
+        ++complete_cycle_requests;
+        return weather_downloaded;
+      },
+      eg::ParseUtcDateTime("2026-07-02T13:30:00Z"));
+  Check(readiness_result.cycle.date == "20260702" &&
+            readiness_result.cycle.cycle == "06" &&
+            incomplete_cycle_requests.load() == 1 &&
+            complete_cycle_requests.load() == 3,
+        "GFS probes the furthest hour once before downloading a cycle");
+
+  const auto direct_wave_url = eg::BuildGfsWaveFileUrl(known_cycle, 6);
+  Check(
+      direct_wave_url.find("/gfs.20260701/00/wave/gridded/"
+                           "gfswave.t00z.global.0p25.f006.grib2") !=
+              std::string::npos &&
+          eg::BuildGfsWaveIndexUrl(known_cycle, 6) == direct_wave_url + ".idx",
+      "GFS Wave direct file and inventory URL parity");
+  eg::GFSRequest indexed_wave_request = weather_request;
+  indexed_wave_request.output = Temp("gfs-wave-indexed.grb");
+  indexed_wave_request.hours = 0;
+  indexed_wave_request.waves = true;
+  int filter_requests = 0;
+  int inventory_requests = 0;
+  int range_requests = 0;
+  const std::string wave_inventory =
+      "1:0:d=2026070100:HTSGW:surface:anl:\n"
+      "2:100:d=2026070100:PERPW:surface:anl:\n"
+      "3:200:d=2026070100:DIRPW:surface:anl:\n"
+      "4:300:d=2026070100:OTHER:surface:anl:\n";
+  const auto indexed_wave = eg::GenerateGfs(
+      indexed_wave_request,
+      [&](const std::string& url, double) {
+        if (url.ends_with(".idx")) {
+          ++inventory_requests;
+          return std::vector<unsigned char>(wave_inventory.begin(),
+                                            wave_inventory.end());
+        }
+        ++filter_requests;
+        throw eg::HttpDownloadError("HTTP status 302 without Location", true);
+      },
+      std::nullopt, {},
+      [&](const std::string&, std::size_t, std::size_t, double) {
+        ++range_requests;
+        return wave_downloaded;
+      });
+  Check(
+      filter_requests == 1 && inventory_requests == 1 && range_requests == 1 &&
+          indexed_wave.urls.size() == 1 &&
+          indexed_wave.urls.front() == eg::BuildGfsWaveFileUrl(known_cycle, 0),
+      "GFS Wave falls back to official indexed field ranges");
   Check(eg::DwdIconEuForecastHourSequence(6, 3) == std::vector<int>({0, 3, 6}),
         "ICON-EU forecast cadence");
   Check(eg::BuildDwdIconEuUrl({"20260701", "06"}, 3, "u_10m")
@@ -1810,6 +1874,8 @@ int main() {
                            wave_grib,
                            wave_only_path,
                            weather_path,
+                           readiness_request.output,
+                           indexed_wave_request.output,
                            icon_path,
                            hrrr_path,
                            ecmwf_path,

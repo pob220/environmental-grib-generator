@@ -923,7 +923,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
           auto wave_future = std::async(std::launch::async, [&, waves] {
             return GenerateGfs(
                 waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
-                now, progress);
+                now, progress,
+                MakeRetryingHttpGetRange({}, "NOAA GFS Wave", progress));
           });
           std::optional<WeatherGenerateResult> weather;
           std::optional<WeatherGenerateResult> wave;
@@ -1111,7 +1112,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     }
     const auto wave = GenerateGfs(
         waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress), now,
-        progress);
+        progress, MakeRetryingHttpGetRange({}, "NOAA GFS Wave", progress));
     streams.emplace_back("waves", wave.output);
     wave_cycle = wave.cycle.CycleTime();
     if (!selected_cycle) selected_cycle = wave.cycle.CycleTime();

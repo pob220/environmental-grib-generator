@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <semaphore>
@@ -30,6 +31,8 @@ constexpr const char* kGfsEndpoint =
     "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl";
 constexpr const char* kGfsWaveEndpoint =
     "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfswave.pl";
+constexpr const char* kGfsProductionBase =
+    "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod";
 constexpr const char* kDwdIconEuBase =
     "https://opendata.dwd.de/weather/nwp/icon-eu/grib";
 constexpr const char* kHrrrBase =
@@ -609,6 +612,16 @@ std::string BuildGfsWaveFilterUrl(const GFSCycle& cycle, int forecast_hour,
   return std::string(kGfsWaveEndpoint) + Query(query);
 }
 
+std::string BuildGfsWaveFileUrl(const GFSCycle& cycle, int forecast_hour) {
+  return std::string(kGfsProductionBase) + "/gfs." + cycle.date + "/" +
+         cycle.cycle + "/wave/gridded/gfswave.t" + cycle.cycle +
+         "z.global.0p25.f" + FormatHour(forecast_hour) + ".grib2";
+}
+
+std::string BuildGfsWaveIndexUrl(const GFSCycle& cycle, int forecast_hour) {
+  return BuildGfsWaveFileUrl(cycle, forecast_hour) + ".idx";
+}
+
 std::vector<unsigned char> CurlHttpGet(const std::string& url,
                                        double timeout_seconds) {
   CURL* curl = ThreadCurlHandle();
@@ -633,16 +646,29 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
     throw HttpDownloadError(
         "HTTP download failed: " + std::string(curl_easy_strerror(status)),
         TransientCurlError(status));
-  if (response < 200 || response >= 300)
+  if (response < 200 || response >= 300) {
+    const std::string body(output.begin(), output.end());
+    const bool file_missing =
+        body.find("Data file is not present") != std::string::npos;
+    const bool rate_limited = body.find("Over Rate Limit") != std::string::npos;
+    std::string detail;
+    if (file_missing)
+      detail = ": requested forecast file is not yet available";
+    else if (rate_limited)
+      detail = ": NOAA NOMADS rate limit reached";
     throw HttpDownloadError(
-        "HTTP download failed with status " + std::to_string(response),
-        TransientHttpStatus(response));
+        "HTTP download failed with status " + std::to_string(response) + detail,
+        rate_limited ||
+            (!file_missing && (TransientHttpStatus(response) ||
+                               (response >= 300 && response < 400))));
+  }
   return output;
 }
 
 WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
                                   std::optional<TimePoint> now,
-                                  ProgressCallback progress) {
+                                  ProgressCallback progress,
+                                  HttpGetRange http_get_range) {
   progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   if (!std::set<int>{1, 3, 6, 12}.contains(request.step_hours))
@@ -679,29 +705,120 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
   if (std::filesystem::exists(request.output) && !request.overwrite)
     throw ValidationError(
         "output already exists; enable overwrite to replace it");
+  const bool using_builtin_http = !http_get;
   if (!http_get) http_get = CurlHttpGet;
+  if (!http_get_range && using_builtin_http) http_get_range = CurlHttpGetRange;
   std::vector<std::vector<unsigned char>> segments;
   std::vector<std::string> urls, errors;
   std::optional<GFSCycle> selected;
+  struct DownloadedHour {
+    int hour{};
+    std::string url;
+    std::vector<unsigned char> bytes;
+  };
+  auto download_filtered = [&](const GFSCycle& cycle, int hour) {
+    const auto url = url_for(cycle, hour);
+    Json::Value details;
+    details["cycle"] = cycle.CycleTime();
+    details["hour"] = hour;
+    Progress(progress, "downloading forecast hour", details);
+    auto bytes = http_get(url, request.timeout_seconds);
+    ValidateDownloaded(bytes, request.waves ? "GFS Wave" : "GFS");
+    return DownloadedHour{hour, url, std::move(bytes)};
+  };
+  auto download_indexed_wave = [&](const GFSCycle& cycle, int hour) {
+    const auto file_url = BuildGfsWaveFileUrl(cycle, hour);
+    const auto index_url = BuildGfsWaveIndexUrl(cycle, hour);
+    Json::Value details;
+    details["cycle"] = cycle.CycleTime();
+    details["hour"] = hour;
+    Progress(progress, "checking NOAA GFS Wave inventory", details);
+    const auto index_bytes = http_get(index_url, request.timeout_seconds);
+    const auto inventory =
+        ParseHrrrInventory(std::string(index_bytes.begin(), index_bytes.end()));
+    if (inventory.empty())
+      throw ValidationError("GFS Wave inventory was empty or unreadable");
+    const std::set<std::string> wanted{"HTSGW", "PERPW", "DIRPW"};
+    std::set<std::string> found;
+    std::vector<std::size_t> selected_entries;
+    std::vector<unsigned char> combined;
+    for (std::size_t i = 0; i < inventory.size(); ++i) {
+      if (!wanted.contains(inventory[i].short_name)) continue;
+      if (i + 1 == inventory.size())
+        throw ValidationError(
+            "GFS Wave selected final inventory message without following "
+            "offset");
+      found.insert(inventory[i].short_name);
+      selected_entries.push_back(i);
+    }
+    if (found != wanted)
+      throw ValidationError(
+          "GFS Wave inventory did not contain all required fields");
+    const bool contiguous =
+        selected_entries.back() - selected_entries.front() + 1 ==
+        selected_entries.size();
+    if (contiguous) {
+      combined =
+          http_get_range(file_url, inventory[selected_entries.front()].offset,
+                         inventory[selected_entries.back() + 1].offset - 1,
+                         request.timeout_seconds);
+      ValidateDownloaded(combined, "GFS Wave indexed fields");
+    } else {
+      for (const std::size_t i : selected_entries) {
+        auto bytes = http_get_range(file_url, inventory[i].offset,
+                                    inventory[i + 1].offset - 1,
+                                    request.timeout_seconds);
+        ValidateDownloaded(bytes, "GFS Wave indexed field");
+        combined.insert(combined.end(), bytes.begin(), bytes.end());
+      }
+    }
+    details["fields"] = static_cast<int>(found.size());
+    Progress(progress, "downloaded NOAA GFS Wave indexed fields", details);
+    return DownloadedHour{hour, file_url, std::move(combined)};
+  };
+  auto download_cycle = [&](const GFSCycle& cycle, const auto& download) {
+    // Probe the furthest required forecast hour before starting concurrent
+    // transfers.  A publishing cycle which cannot cover the requested window
+    // is rejected with one request instead of a burst for every early hour.
+    std::vector<DownloadedHour> downloaded;
+    downloaded.push_back(download(cycle, hours.back()));
+    if (hours.size() > 1) {
+      std::vector<int> remaining(hours.begin(), hours.end() - 1);
+      auto rest = ParallelMapOrdered(
+          remaining, kDefaultDownloadConcurrency,
+          [&](const int& hour) { return download(cycle, hour); });
+      downloaded.insert(downloaded.end(), std::make_move_iterator(rest.begin()),
+                        std::make_move_iterator(rest.end()));
+    }
+    std::sort(downloaded.begin(), downloaded.end(),
+              [](const auto& left, const auto& right) {
+                return left.hour < right.hour;
+              });
+    return downloaded;
+  };
   for (const auto& cycle : cycles) {
     try {
       segments.clear();
       urls.clear();
-      struct DownloadedHour {
-        std::string url;
-        std::vector<unsigned char> bytes;
-      };
-      auto downloaded = ParallelMapOrdered(
-          hours, kDefaultDownloadConcurrency, [&](const int& hour) {
-            const auto url = url_for(cycle, hour);
-            Json::Value details;
-            details["cycle"] = cycle.CycleTime();
-            details["hour"] = hour;
-            Progress(progress, "downloading forecast hour", details);
-            auto bytes = http_get(url, request.timeout_seconds);
-            ValidateDownloaded(bytes, request.waves ? "GFS Wave" : "GFS");
-            return DownloadedHour{url, std::move(bytes)};
-          });
+      std::vector<DownloadedHour> downloaded;
+      try {
+        downloaded = download_cycle(cycle, download_filtered);
+      } catch (const ValidationError& filter_error) {
+        if (!request.waves || !http_get_range) throw;
+        Json::Value details;
+        details["cycle"] = cycle.CycleTime();
+        details["reason"] = filter_error.what();
+        details["scope"] = "global selected fields";
+        Progress(progress, "NOAA wave subset unavailable; using indexed data",
+                 details);
+        try {
+          downloaded = download_cycle(cycle, download_indexed_wave);
+        } catch (const ValidationError& indexed_error) {
+          throw ValidationError(
+              std::string("NOAA wave subset failed: ") + filter_error.what() +
+              "; indexed fallback failed: " + indexed_error.what());
+        }
+      }
       for (auto& item : downloaded) {
         urls.push_back(std::move(item.url));
         segments.push_back(std::move(item.bytes));
