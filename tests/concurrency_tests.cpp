@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -116,31 +118,57 @@ int main() {
     request.overwrite = true;
 
     auto run = [&](bool parallel, const std::filesystem::path& output,
-                   std::atomic<int>& peak) {
+                   std::atomic<int>& peak,
+                   std::atomic<bool>& component_overlap) {
       std::atomic<int> active{0};
+      std::mutex component_mutex;
+      std::condition_variable component_cv;
+      bool weather_entered = false;
+      bool current_entered = false;
       request.parallel_components = parallel;
       request.output = output;
       return eg::GenerateEnvironment(
           request,
           [&](const std::string& url, double) {
+            const bool is_current = url.rfind("ftp://", 0) == 0;
+            if (parallel) {
+              std::unique_lock<std::mutex> lock(component_mutex);
+              (is_current ? current_entered : weather_entered) = true;
+              if (weather_entered && current_entered)
+                component_overlap.store(true);
+              component_cv.notify_all();
+              if (!component_cv.wait_for(
+                      lock, std::chrono::seconds(5), [&] {
+                        return weather_entered && current_entered;
+                      })) {
+                throw std::runtime_error(
+                    "weather and current components did not overlap");
+              }
+            }
             const int count = ++active;
             UpdatePeak(peak, count);
-            std::this_thread::sleep_for(url.rfind("ftp://", 0) == 0
+            std::this_thread::sleep_for(is_current
                                             ? std::chrono::milliseconds(120)
                                             : std::chrono::milliseconds(50));
             --active;
-            return url.rfind("ftp://", 0) == 0 ? current_bytes : weather_bytes;
+            return is_current ? current_bytes : weather_bytes;
           },
           start);
     };
 
     std::atomic<int> serial_peak{0}, parallel_peak{0};
-    const auto serial = run(false, serial_path, serial_peak);
-    const auto concurrent = run(true, parallel_path, parallel_peak);
+    std::atomic<bool> serial_overlap{false}, parallel_overlap{false};
+    const auto serial =
+        run(false, serial_path, serial_peak, serial_overlap);
+    const auto concurrent =
+        run(true, parallel_path, parallel_peak, parallel_overlap);
     Check(serial_peak.load() == 4,
           "serial component mode still parallelizes forecast hours");
-    Check(parallel_peak.load() == 5,
-          "weather and remote current downloads overlap within global bound");
+    Check(!serial_overlap.load(), "serial component mode does not overlap");
+    Check(parallel_overlap.load(),
+          "weather and remote current components overlap");
+    Check(parallel_peak.load() <= 5,
+          "overlapping component downloads stay within global bound");
     Check(serial.message_count == concurrent.message_count &&
               serial.byte_count == concurrent.byte_count,
           "component concurrency preserves output counts");
