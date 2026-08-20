@@ -29,7 +29,10 @@ struct XtdPackageStatus {
   bool tide_available{};
   bool climatology_available{};
   bool uncertainty_available{};
+  bool height_available{};
   std::string residual_representation;
+  std::string height_datum_id;
+  std::string height_datum_name;
   std::string package_id;
   std::string package_hash;
   std::string parent_package_hash;
@@ -40,7 +43,20 @@ struct XtdPackageStatistics {
   XtdStatistics tide;
   XtdStatistics residual;
   XtdStatistics uncertainty;
+  XtdStatistics height;
   std::uint64_t outer_bytes_read{};
+};
+
+struct TideHeightGrid {
+  TimePoint time;
+  RegularGrid grid;
+  std::vector<double> height_m;
+  std::vector<std::uint8_t> mask;
+  std::string datum_id;
+  std::string datum_name;
+
+  void Validate() const;
+  [[nodiscard]] bool has_mask() const { return !mask.empty(); }
 };
 
 class XtdPackageReader {
@@ -61,6 +77,9 @@ public:
                                    const std::vector<TimePoint>& times,
                                    OfflineCurrentMode mode,
                                    bool infer_minor_tides = true);
+  std::vector<TideHeightGrid> PredictHeight(
+      const RegularGrid& output_grid, const std::vector<TimePoint>& times,
+      bool infer_minor_tides = true);
   Json::Value VerifyAllComponents();
 
 private:

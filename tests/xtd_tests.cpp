@@ -502,6 +502,56 @@ void TestHarmonicResidualAndRegionalReads() {
   RemoveTestFile(path);
 }
 
+void TestWaterLevelHarmonicsAndDatum() {
+  const auto path = TempPath("v2-water-level");
+  test::XtdV2FixtureOptions options;
+  options.include_height = true;
+  options.height_reference_level_m = 5.2226;
+  options.height_datum_id = "chart-datum";
+  options.height_datum_name = "Admiralty Chart Datum test fixture";
+  options.height_value = [](std::size_t field, std::uint32_t,
+                            std::uint32_t) {
+    constexpr double coefficients[16]{3.0, 0.4, 0.9, -0.2, 0.12, 0.03,
+                                      0.11, 0.02, 0.55, -0.1, 0.05, 0.01,
+                                      0.28, 0.04, 0.03, -0.01};
+    return coefficients[field];
+  };
+  test::WriteXtdV2Fixture(path, options);
+  eg::XtdPackageReader reader(path);
+  Check(reader.status().height_available &&
+            reader.status().height_datum_id == "chart-datum",
+        "v2 package exposes water-level capability and datum");
+  const auto point = PointGrid(90.0, 0.0);
+  const std::vector<eg::TimePoint> times{
+      eg::ParseUtcDateTime("2026-01-01T00:00:00Z"),
+      eg::ParseUtcDateTime("2026-01-01T06:00:00Z")};
+  const auto heights = reader.PredictHeight(point, times, false);
+  std::vector<std::complex<double>> coefficients{
+      {3.0, 0.4}, {0.9, -0.2}, {0.12, 0.03}, {0.11, 0.02},
+      {0.55, -0.1}, {0.05, 0.01}, {0.28, 0.04}, {0.03, -0.01}};
+  const auto expected = eg::PredictAtlasHarmonicGrid(
+      options.height_constituents, coefficients, 1, times, false);
+  Check(heights.size() == times.size(),
+        "water-level prediction returns every requested time");
+  for (std::size_t index = 0; index < times.size(); ++index) {
+    Check(std::abs(heights[index].height_m[0] -
+                       (options.height_reference_level_m + expected[index])) <
+              0.001,
+          "water-level prediction preserves harmonics and reference level");
+    Check(heights[index].datum_id == "chart-datum" &&
+              heights[index].datum_name ==
+                  "Admiralty Chart Datum test fixture",
+          "every water-level result carries the vertical datum");
+  }
+  const auto inspection = eg::InspectXtdPackage(path);
+  Check(inspection["capabilities"]["water_level_height"].asBool(),
+        "inspection advertises water-level capability");
+  const auto verification = reader.VerifyAllComponents();
+  Check(verification["water_level_harmonics"]["tiles_loaded"].asUInt64() > 0,
+        "verification authenticates water-level tiles");
+  RemoveTestFile(path);
+}
+
 void TestMonthlyCentreInterpolationAndMask() {
   const auto path = TempPath("v2-monthly");
   test::XtdV2FixtureOptions options;
@@ -621,6 +671,7 @@ int main(int argc, char** argv) {
   TestEnvironmentGeneration();
   TestPackageDispatchAndExactTideParity();
   TestHarmonicResidualAndRegionalReads();
+  TestWaterLevelHarmonicsAndDatum();
   TestMonthlyCentreInterpolationAndMask();
   TestV2VerificationAndCorruption();
   FinishDeferredCleanup();

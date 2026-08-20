@@ -126,6 +126,20 @@ double TransportToSquareCentimetresPerSecond(const std::string& units) {
   throw ValidationError("unsupported TPXO transport units: " + units);
 }
 
+double ElevationToMetres(const std::string& units) {
+  const auto unit = NormalizedUnit(units);
+  if (unit == "millimeter" || unit == "millimeters" ||
+      unit == "millimetre" || unit == "millimetres" || unit == "mm")
+    return 0.001;
+  if (unit == "centimeter" || unit == "centimeters" ||
+      unit == "centimetre" || unit == "centimetres" || unit == "cm")
+    return 0.01;
+  if (unit == "meter" || unit == "meters" || unit == "metre" ||
+      unit == "metres" || unit == "m")
+    return 1.0;
+  throw ValidationError("unsupported TPXO elevation units: " + units);
+}
+
 struct AxisWindow { std::size_t begin{},count{}; std::vector<double> values; };
 
 AxisWindow Window(const std::vector<double>& axis, double minimum,
@@ -225,6 +239,106 @@ RegionalField ReadComponent(const std::filesystem::path& grid_path,
   return result;
 }
 
+RegionalField ReadHeightComponent(const std::filesystem::path& grid_path,
+                                  const std::filesystem::path& model_path,
+                                  const BoundingBox& bbox) {
+  NcFile grid(grid_path), model(model_path);
+  const auto grid_x = grid.Vector("lon_z");
+  const auto grid_y = grid.Vector("lat_z");
+  const auto xall = model.Vector("lon_z");
+  const auto yall = model.Vector("lat_z");
+  if (grid_x.size() != xall.size() || grid_y.size() != yall.size())
+    throw ValidationError(
+        "TPXO elevation and bathymetry coordinate sizes differ");
+  for (std::size_t i = 0; i < xall.size(); ++i)
+    if (std::abs(grid_x[i] - xall[i]) > 1e-10)
+      throw ValidationError(
+          "TPXO elevation and bathymetry longitudes differ");
+  for (std::size_t i = 0; i < yall.size(); ++i)
+    if (std::abs(grid_y[i] - yall[i]) > 1e-10)
+      throw ValidationError("TPXO elevation and bathymetry latitudes differ");
+
+  const bool zero_to_360 = xall.back() > 180.0;
+  std::vector<std::pair<AxisWindow, double>> xwindows;
+  if (zero_to_360 && bbox.west < 0.0 && bbox.east >= 0.0) {
+    xwindows.emplace_back(
+        Window(xall, bbox.west + 360.0, xall.back(), "longitude"), -360.0);
+    xwindows.emplace_back(
+        Window(xall, xall.front(), bbox.east, "longitude"), 0.0);
+  } else {
+    double west = bbox.west, east = bbox.east;
+    const bool shifted = zero_to_360 && west < 0.0;
+    if (shifted) {
+      west += 360.0;
+      east += 360.0;
+    }
+    xwindows.emplace_back(Window(xall, west, east, "longitude"),
+                          shifted ? -360.0 : 0.0);
+  }
+  const auto yw = Window(yall, bbox.south, bbox.north, "latitude");
+  const auto depth_shape = grid.Shape(grid.Var("hz"));
+  const bool xy = depth_shape.size() == 2 && depth_shape[0] == xall.size() &&
+                  depth_shape[1] == yall.size();
+  const bool yx = depth_shape.size() == 2 && depth_shape[0] == yall.size() &&
+                  depth_shape[1] == xall.size();
+  if (!xy && !yx)
+    throw ValidationError(
+        "TPXO elevation bathymetry dimensions do not match coordinate axes");
+  if (model.Shape(model.Var("hRe")) != depth_shape ||
+      model.Shape(model.Var("hIm")) != depth_shape)
+    throw ValidationError(
+        "TPXO elevation coefficient dimensions do not match bathymetry");
+  const double to_metres =
+      ElevationToMetres(model.AttributeText("hRe", "units"));
+
+  std::vector<RegionalField> pieces;
+  for (const auto& [xw, shift] : xwindows) {
+    const std::vector<std::size_t> start =
+        xy ? std::vector<std::size_t>{xw.begin, yw.begin}
+           : std::vector<std::size_t>{yw.begin, xw.begin};
+    const std::vector<std::size_t> count =
+        xy ? std::vector<std::size_t>{xw.count, yw.count}
+           : std::vector<std::size_t>{yw.count, xw.count};
+    const auto depth = grid.Slab("hz", start, count);
+    const auto real = model.Slab("hRe", start, count);
+    const auto imaginary = model.Slab("hIm", start, count);
+    RegionalField piece{xw.values, yw.values,
+                        std::vector<std::complex<double>>(xw.count * yw.count)};
+    for (auto& x : piece.x) x += shift;
+    for (std::size_t y = 0; y < yw.count; ++y) {
+      for (std::size_t x = 0; x < xw.count; ++x) {
+        const std::size_t source =
+            xy ? Index2(count, x, y) : Index2(count, y, x);
+        const std::size_t target = y * xw.count + x;
+        if (!std::isfinite(depth[source]) || depth[source] == 0.0 ||
+            !std::isfinite(real[source]) ||
+            !std::isfinite(imaginary[source])) {
+          piece.values[target] = {NAN, NAN};
+        } else {
+          piece.values[target] = {real[source] * to_metres,
+                                  imaginary[source] * to_metres};
+        }
+      }
+    }
+    pieces.push_back(std::move(piece));
+  }
+  if (pieces.size() == 1) return std::move(pieces.front());
+  RegionalField result;
+  result.y = yw.values;
+  for (const auto& piece : pieces)
+    result.x.insert(result.x.end(), piece.x.begin(), piece.x.end());
+  result.values.reserve(result.x.size() * result.y.size());
+  for (std::size_t y = 0; y < result.y.size(); ++y)
+    for (const auto& piece : pieces)
+      result.values.insert(
+          result.values.end(),
+          piece.values.begin() +
+              static_cast<std::ptrdiff_t>(y * piece.x.size()),
+          piece.values.begin() +
+              static_cast<std::ptrdiff_t>((y + 1) * piece.x.size()));
+  return result;
+}
+
 std::complex<double> Bilinear(const RegionalField& source,double lon,double lat) {
   auto bracket=[](const std::vector<double>& axis,double value)
       -> std::optional<std::pair<std::size_t,std::size_t>> {
@@ -246,6 +360,59 @@ std::complex<double> Bilinear(const RegionalField& source,double lon,double lat)
   return q00*(1-fx)*(1-fy)+q10*fx*(1-fy)+q01*(1-fx)*fy+q11*fx*fy;
 }
 
+std::complex<double> BilinearOrNearestCoastal(const RegionalField& source,
+                                              double lon, double lat,
+                                              double maximum_distance_deg) {
+  const auto interpolated = Bilinear(source, lon, lat);
+  if (std::isfinite(interpolated.real()) &&
+      std::isfinite(interpolated.imag()))
+    return interpolated;
+  const auto closest_index = [](const std::vector<double>& axis, double value) {
+    const auto upper = std::lower_bound(axis.begin(), axis.end(), value);
+    if (upper == axis.begin()) return std::size_t{0};
+    if (upper == axis.end()) return axis.size() - 1;
+    const auto high = static_cast<std::size_t>(upper - axis.begin());
+    return std::abs(axis[high] - value) < std::abs(axis[high - 1] - value)
+               ? high
+               : high - 1;
+  };
+  const auto cx = closest_index(source.x, lon);
+  const auto cy = closest_index(source.y, lat);
+  const double x_step = source.x.size() > 1
+                            ? std::abs(source.x[1] - source.x[0])
+                            : maximum_distance_deg;
+  const double y_step = source.y.size() > 1
+                            ? std::abs(source.y[1] - source.y[0])
+                            : maximum_distance_deg;
+  const auto x_radius = static_cast<std::size_t>(
+      std::ceil(maximum_distance_deg / std::max(x_step, 1e-9)));
+  const auto y_radius = static_cast<std::size_t>(
+      std::ceil(maximum_distance_deg / std::max(y_step, 1e-9)));
+  const auto x_begin = cx > x_radius ? cx - x_radius : 0;
+  const auto y_begin = cy > y_radius ? cy - y_radius : 0;
+  const auto x_end = std::min(source.x.size() - 1, cx + x_radius);
+  const auto y_end = std::min(source.y.size() - 1, cy + y_radius);
+  const double longitude_scale =
+      std::max(0.1, std::cos(lat * 3.14159265358979323846 / 180.0));
+  double best_distance = maximum_distance_deg * maximum_distance_deg;
+  std::complex<double> best{NAN, NAN};
+  for (std::size_t y = y_begin; y <= y_end; ++y) {
+    for (std::size_t x = x_begin; x <= x_end; ++x) {
+      const auto value = source.values[y * source.x.size() + x];
+      if (!std::isfinite(value.real()) || !std::isfinite(value.imag()))
+        continue;
+      const double dx = (source.x[x] - lon) * longitude_scale;
+      const double dy = source.y[y] - lat;
+      const double distance = dx * dx + dy * dy;
+      if (distance <= best_distance) {
+        best_distance = distance;
+        best = value;
+      }
+    }
+  }
+  return best;
+}
+
 std::vector<std::filesystem::path> ModelFiles(const std::filesystem::path& directory) {
   std::vector<std::filesystem::path> files;
   for(const auto& entry:std::filesystem::directory_iterator(directory)) {
@@ -254,6 +421,22 @@ std::vector<std::filesystem::path> ModelFiles(const std::filesystem::path& direc
   }
   std::sort(files.begin(),files.end());
   if(files.empty()) throw ValidationError("no TPXO10 atlas constituent files found in "+PathToUtf8(directory));
+  return files;
+}
+
+std::vector<std::filesystem::path> HeightModelFiles(
+    const std::filesystem::path& directory) {
+  std::vector<std::filesystem::path> files;
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    const auto name = PathToUtf8(entry.path().filename());
+    if (entry.is_regular_file() && name.starts_with("h_") &&
+        name.ends_with("_tpxo10_atlas_30_v2.nc"))
+      files.push_back(entry.path());
+  }
+  std::sort(files.begin(), files.end());
+  if (files.empty())
+    throw ValidationError("no TPXO10 elevation constituent files found in " +
+                          PathToUtf8(directory));
   return files;
 }
 
@@ -276,6 +459,24 @@ std::filesystem::path ResolveTpxo10AtlasDirectory(
         " and " + PathToUtf8(nested_grid) + ")");
   }
   ModelFiles(directory);
+  return directory;
+}
+
+std::filesystem::path ResolveTpxo10AtlasHeightDirectory(
+    const std::filesystem::path& model_directory) {
+  const auto direct_grid = model_directory / "grid_tpxo10atlas_v2.nc";
+  const auto nested = model_directory / "TPXO10_atlas_v2";
+  const auto nested_grid = nested / "grid_tpxo10atlas_v2.nc";
+  std::filesystem::path directory;
+  if (std::filesystem::is_regular_file(direct_grid))
+    directory = model_directory;
+  else if (std::filesystem::is_regular_file(nested_grid))
+    directory = nested;
+  else
+    throw ValidationError(
+        "TPXO10 grid file not found for height authoring; checked " +
+        PathToUtf8(direct_grid) + " and " + PathToUtf8(nested_grid));
+  HeightModelFiles(directory);
   return directory;
 }
 
@@ -317,6 +518,48 @@ TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
     for(double lat:output_grid.latitudes) for(double lon:output_grid.longitudes) cache.v_cm_s.push_back(Bilinear(v,lon,lat));
     if(cache.u_cm_s.size()!=cache.constituents.size()*points || cache.v_cm_s.size()!=cache.constituents.size()*points)
       throw ValidationError("internal TPXO interpolation size mismatch");
+  }
+  return cache;
+}
+
+TpxoHeightCache LoadTpxo10AtlasHeightModel(
+    const std::filesystem::path& model_directory, const BoundingBox& bbox,
+  const RegularGrid& output_grid) {
+  bbox.Validate();
+  if (output_grid.latitudes.empty() || output_grid.longitudes.empty())
+    throw ValidationError("TPXO height output grid is empty");
+  const auto directory = ResolveTpxo10AtlasHeightDirectory(model_directory);
+  const auto grid_file = directory / "grid_tpxo10atlas_v2.nc";
+  const auto files = HeightModelFiles(directory);
+  TpxoHeightCache cache;
+  cache.bbox = bbox;
+  cache.grid = output_grid;
+  cache.metadata["format"] = "xtd-height-authoring-cache";
+  cache.metadata["format_version"] = 1;
+  cache.metadata["model_name"] = "TPXO10-atlas-v2-nc";
+  cache.metadata["coefficient_units"] = "m";
+  cache.metadata["vertical_datum_id"] = cache.vertical_datum_id;
+  cache.metadata["vertical_datum_name"] = cache.vertical_datum_name;
+  cache.metadata["runtime_requires_source_model"] = false;
+  cache.metadata["grid_spacing_deg"] = output_grid.spacing_deg;
+  cache.metadata["bbox"]["west"] = bbox.west;
+  cache.metadata["bbox"]["south"] = bbox.south;
+  cache.metadata["bbox"]["east"] = bbox.east;
+  cache.metadata["bbox"]["north"] = bbox.north;
+  cache.metadata["constituents"] = Json::arrayValue;
+  const std::size_t points = output_grid.size();
+  for (const auto& file : files) {
+    NcFile model(file);
+    const auto constituent = model.Text("con");
+    const auto height = ReadHeightComponent(grid_file, file, bbox);
+    cache.constituents.push_back(constituent);
+    cache.metadata["constituents"].append(constituent);
+    for (const double latitude : output_grid.latitudes)
+      for (const double longitude : output_grid.longitudes)
+        cache.height_m.push_back(
+            BilinearOrNearestCoastal(height, longitude, latitude, 0.25));
+    if (cache.height_m.size() != cache.constituents.size() * points)
+      throw ValidationError("internal TPXO height interpolation size mismatch");
   }
   return cache;
 }

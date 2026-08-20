@@ -321,7 +321,14 @@ const std::map<std::string, ConstituentParameters>& Parameters() {
       {"rho1", {5.254133027, 6.531174e-5}}, {"mf", {1.756042456, 0.053234e-4}},
       {"mm", {1.964021610, 0.026392e-4}}, {"m4", {3.463115091, 2.810377e-4}},
       {"ms4", {1.731557546, 2.859630e-4}}, {"mn4", {1.499093481, 2.783984e-4}},
-      {"s1", {0.0, 0.0}}};
+      {"s1", {0.0, 7.272205e-5}},
+      // Shallow-water and long-period constituents are important at
+      // nonlinear ports such as Liverpool.  The complex coefficient carries
+      // the source phase, so a fixed zero phase is valid for these additions.
+      {"m3", {0.0, 2.107783e-4}}, {"m6", {0.0, 4.215566e-4}},
+      {"s4", {0.0, 2.908882e-4}}, {"mk3", {0.0, 2.134401e-4}},
+      {"2mk3", {0.0, 2.081165e-4}}, {"2sm2", {0.0, 1.503693e-4}},
+      {"lda2", {0.0, 1.428193e-4}}, {"sa", {0.0, 1.991064e-7}}};
   return values;
 }
 
@@ -357,6 +364,25 @@ std::pair<double, double> Nodal(const std::string& c, double n_deg,
   } else if (c == "m4" || c == "mn4") {
     const auto [f,u] = Nodal("m2", n_deg, p_deg);
     return {f*f, 2*u};
+  } else if (c == "m3") {
+    const auto [f,u] = Nodal("m2", n_deg, p_deg);
+    return {std::pow(f, 1.5), 1.5*u};
+  } else if (c == "m6") {
+    const auto [f,u] = Nodal("m2", n_deg, p_deg);
+    return {f*f*f, 3*u};
+  } else if (c == "mk3") {
+    const auto [fm,um] = Nodal("m2", n_deg, p_deg);
+    const auto [fk,uk] = Nodal("k1", n_deg, p_deg);
+    return {fm*fk, um+uk};
+  } else if (c == "2mk3") {
+    const auto [fm,um] = Nodal("m2", n_deg, p_deg);
+    const auto [fk,uk] = Nodal("k1", n_deg, p_deg);
+    return {fm*fm/fk, 2*um-uk};
+  } else if (c == "2sm2") {
+    const auto [f,u] = Nodal("m2", n_deg, p_deg);
+    return {f, -u};
+  } else if (c == "lda2") {
+    return Nodal("l2", n_deg, p_deg);
   } else if (c == "l2") {
     a = -0.25*std::sin(2*p) - 0.11*std::sin(2*p-n) - 0.04*sn;
     b = 1.0 - 0.25*std::cos(2*p) - 0.11*std::cos(2*p-n) - 0.04*cn;

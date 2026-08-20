@@ -139,6 +139,18 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME environmental_grib_xtd_tests COMMAND environmental_grib_xtd_tests)
 
+  # Private/offline authoring helper.  It consumes a locally licensed TPXO
+  # source and emits a self-contained derived XTD height package; runtime
+  # readers never link the NetCDF importer.
+  add_executable(environmental_grib_tpxo_height_author
+    tests/tpxo_height_author.cpp
+    tests/xtd_test_support.cpp
+  )
+  target_include_directories(environmental_grib_tpxo_height_author PRIVATE
+    tests)
+  target_link_libraries(environmental_grib_tpxo_height_author PRIVATE
+    environmental_grib_engine)
+
   add_executable(environmental_grib_merge_tests
     tests/environmental_merge_tests.cpp
   )

@@ -21,6 +21,19 @@ struct TpxoCache {
   std::vector<std::complex<double>> v_cm_s;
 };
 
+// Offline authoring value. Raw TPXO NetCDF files are intentionally consumed
+// only by the generator; runtime XTD readers use the derived package.
+struct TpxoHeightCache {
+  Json::Value metadata;
+  BoundingBox bbox;
+  RegularGrid grid;
+  std::vector<std::string> constituents;
+  // Constituent-major complex elevation coefficients in metres.
+  std::vector<std::complex<double>> height_m;
+  std::string vertical_datum_id{"model-mean-sea-level"};
+  std::string vertical_datum_name{"Model mean sea level"};
+};
+
 struct TpxoGenerationResult {
   std::filesystem::path output;
   std::size_t message_count{};
@@ -62,7 +75,12 @@ TpxoGenerationResult GenerateFromTpxoCache(
 TpxoCache LoadTpxo10AtlasModel(const std::filesystem::path& model_directory,
                                const BoundingBox& bbox,
                                const RegularGrid& output_grid);
+TpxoHeightCache LoadTpxo10AtlasHeightModel(
+    const std::filesystem::path& model_directory, const BoundingBox& bbox,
+    const RegularGrid& output_grid);
 std::filesystem::path ResolveTpxo10AtlasDirectory(
+    const std::filesystem::path& model_directory);
+std::filesystem::path ResolveTpxo10AtlasHeightDirectory(
     const std::filesystem::path& model_directory);
 TpxoGenerationResult GenerateFromTpxo10AtlasModel(
     const TpxoModelRequest& request);

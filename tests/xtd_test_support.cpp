@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -488,22 +489,27 @@ std::array<unsigned char, 32> DeriveV2ComponentKey(
 
 Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
                           std::uint32_t ty, std::uint16_t width,
-                          std::uint16_t height, bool uncertainty) {
+                          std::uint16_t height, std::uint32_t component_type) {
+  const bool uncertainty = component_type == 3;
+  const bool water_level = component_type == 4;
   const std::uint32_t cells = static_cast<std::uint32_t>(width) * height;
   const std::uint32_t mask_bytes = (cells + 7) / 8;
   const std::uint32_t fields =
       uncertainty                                                         ? 4
+      : water_level ? options.height_constituents.size() * 2
       : options.representation == XtdV2ResidualRepresentation::kHarmonic2 ? 10
                                                                           : 24;
   const std::uint32_t quality_bytes = uncertainty ? cells * 7 : 0;
   const std::uint32_t total =
       32 + mask_bytes + fields * 4 + fields * cells * 2 + quality_bytes;
   Bytes result(total);
-  std::copy_n(uncertainty ? "XCU1" : "XCR1", 4, result.begin());
+  std::copy_n(uncertainty ? "XCU1" : water_level ? "XCH1" : "XCR1", 4,
+              result.begin());
   PutLe(&result, 4, static_cast<std::uint16_t>(1));
   PutLe(&result, 6,
         static_cast<std::uint16_t>(
             uncertainty ? 0
+            : water_level ? 5
             : options.representation == XtdV2ResidualRepresentation::kHarmonic2
                 ? 2
                 : 3));
@@ -541,6 +547,12 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
         if (uncertainty) {
           constexpr std::array<double, 4> values{0.12, 0.16, 0.004, 0.03};
           value = values[field];
+        } else if (water_level && options.height_value) {
+          value = options.height_value(field, global_x, global_y);
+        } else if (water_level) {
+          const auto constituent = field / 2;
+          value = field % 2 == 0 ? 0.25 / (constituent + 1)
+                                 : -0.08 / (constituent + 1);
         } else if (options.residual_value) {
           value = options.residual_value(field, global_x, global_y);
         } else if (options.representation ==
@@ -607,16 +619,32 @@ V2Component MakeV2TiledComponent(
   V2Component component;
   component.type = type;
   component.representation = representation;
-  for (std::size_t i = 0; i < component.id.size(); ++i) {
-    component.id[i] = static_cast<unsigned char>(type * 31 + i * 7);
-  }
+  if (options.randomize_crypto)
+    randombytes_buf(component.id.data(), component.id.size());
+  else
+    for (std::size_t i = 0; i < component.id.size(); ++i)
+      component.id[i] = static_cast<unsigned char>(type * 31 + i * 7);
   Json::Value metadata(Json::objectValue);
   metadata["component"] =
-      type == 2 ? "climatological_residual" : "climatological_uncertainty";
+      type == 2 ? "climatological_residual"
+      : type == 3 ? "climatological_uncertainty"
+                  : "water_level_harmonics";
   metadata["representation"] = type == 3             ? "uncertainty_v1"
+                               : type == 4             ? "harmonics_v1"
                                : representation == 2 ? "harmonic2"
                                                      : "monthly12";
-  metadata["velocity_units"] = "m/s";
+  if (type == 4) {
+    metadata["height_units"] = "m";
+    metadata["reference_level_m"] = options.height_reference_level_m;
+    metadata["vertical_datum"]["id"] = options.height_datum_id;
+    metadata["vertical_datum"]["name"] = options.height_datum_name;
+    for (const auto& constituent : options.height_constituents)
+      metadata["constituents"].append(constituent);
+    for (const auto& name : options.height_metadata.getMemberNames())
+      metadata[name] = options.height_metadata[name];
+  } else {
+    metadata["velocity_units"] = "m/s";
+  }
   auto& grid = metadata["grid"];
   grid["nx"] = options.tide.nx;
   grid["ny"] = options.tide.ny;
@@ -653,11 +681,14 @@ V2Component MakeV2TiledComponent(
     tile.height = static_cast<std::uint16_t>(std::min(
         options.tile_height, options.tide.ny - tile.ty * options.tile_height));
     tile.plaintext = MakeV2TilePlaintext(options, tile.tx, tile.ty, tile.width,
-                                         tile.height, type == 3);
+                                         tile.height, type);
     tile.compressed = Compress(tile.plaintext, 3);
-    for (std::size_t i = 0; i < tile.nonce.size(); ++i) {
-      tile.nonce[i] = static_cast<unsigned char>(type * 41 + id * 13 + i * 3);
-    }
+    if (options.randomize_crypto)
+      randombytes_buf(tile.nonce.data(), tile.nonce.size());
+    else
+      for (std::size_t i = 0; i < tile.nonce.size(); ++i)
+        tile.nonce[i] =
+            static_cast<unsigned char>(type * 41 + id * 13 + i * 3);
     const auto position = static_cast<std::size_t>(id) * 64;
     PutLe(&component.index, position, id);
     PutLe(&component.index, position + 4, tile.tx);
@@ -713,82 +744,133 @@ V2Component MakeV2TiledComponent(
 void WriteXtdV2Fixture(const std::filesystem::path& path,
                        const XtdV2FixtureOptions& options) {
   xtd_internal::EnsureSodium();
-  const auto nested_path = path.string() + ".nested-v1";
-  WriteXtdFixture(nested_path, options.tide);
-  const auto nested = ReadFile(nested_path);
-  std::filesystem::remove(nested_path);
-  const auto tide_hash = Sha256(nested);
+  if (!options.include_tide && !options.include_height)
+    throw std::runtime_error("XTD v2 fixture needs a tide or height component");
+  Bytes nested;
+  std::array<unsigned char, 32> tide_hash{};
+  if (options.include_tide) {
+    const auto nested_path = path.string() + ".nested-v1";
+    WriteXtdFixture(nested_path, options.tide);
+    nested = ReadFile(nested_path);
+    std::filesystem::remove(nested_path);
+    tide_hash = Sha256(nested);
+  }
 
   std::array<unsigned char, 16> package_id{};
   std::array<unsigned char, 32> package_key{};
   std::array<unsigned char, 24> wrap_nonce{};
-  for (std::size_t i = 0; i < package_id.size(); ++i)
-    package_id[i] = static_cast<unsigned char>(0x20 + i * 5);
-  for (std::size_t i = 0; i < package_key.size(); ++i)
-    package_key[i] = static_cast<unsigned char>(0x91 + i * 11);
-  for (std::size_t i = 0; i < wrap_nonce.size(); ++i)
-    wrap_nonce[i] = static_cast<unsigned char>(0x61 + i * 7);
+  if (options.randomize_crypto) {
+    randombytes_buf(package_id.data(), package_id.size());
+    randombytes_buf(package_key.data(), package_key.size());
+    randombytes_buf(wrap_nonce.data(), wrap_nonce.size());
+  } else {
+    for (std::size_t i = 0; i < package_id.size(); ++i)
+      package_id[i] = static_cast<unsigned char>(0x20 + i * 5);
+    for (std::size_t i = 0; i < package_key.size(); ++i)
+      package_key[i] = static_cast<unsigned char>(0x91 + i * 11);
+    for (std::size_t i = 0; i < wrap_nonce.size(); ++i)
+      wrap_nonce[i] = static_cast<unsigned char>(0x61 + i * 7);
+  }
 
   Json::Value outer_metadata(Json::objectValue);
   outer_metadata["format"] = "xgrib-xtd";
   outer_metadata["format_version"] = 2;
-  outer_metadata["package_version"] = "synthetic-v2";
-  outer_metadata["parent_package_hash"] = HexDigest(tide_hash);
-  outer_metadata["tide_component_hash"] = HexDigest(tide_hash);
-  outer_metadata["climatology_representation"] =
-      options.representation == XtdV2ResidualRepresentation::kHarmonic2
-          ? "harmonic2"
-          : "monthly12";
+  outer_metadata["package_version"] = "2.0";
+  for (const auto& name : options.outer_metadata.getMemberNames())
+    outer_metadata[name] = options.outer_metadata[name];
+  if (options.include_tide) {
+    outer_metadata["parent_package_hash"] = HexDigest(tide_hash);
+    outer_metadata["tide_component_hash"] = HexDigest(tide_hash);
+  }
+  if (options.include_residual)
+    outer_metadata["climatology_representation"] =
+        options.representation == XtdV2ResidualRepresentation::kHarmonic2
+            ? "harmonic2"
+            : "monthly12";
   Json::StreamWriterBuilder writer;
   writer["indentation"] = "";
   const auto outer_json = Json::writeString(writer, outer_metadata);
   const Bytes outer_metadata_bytes(outer_json.begin(), outer_json.end());
 
-  constexpr std::uint32_t component_count = 3;
+  const std::uint32_t component_count =
+      static_cast<std::uint32_t>(options.include_tide) +
+      static_cast<std::uint32_t>(options.include_residual) +
+      static_cast<std::uint32_t>(options.include_uncertainty) +
+      static_cast<std::uint32_t>(options.include_height);
   const std::uint64_t directory_offset =
       kHeaderSize + outer_metadata_bytes.size();
   const std::uint64_t payload_offset =
       directory_offset + component_count * kV2ComponentEntrySize;
   const std::uint64_t nested_offset = payload_offset;
-  const std::uint64_t residual_offset = nested_offset + nested.size();
+  std::uint64_t next_offset = payload_offset + nested.size();
   const std::uint32_t residual_representation =
       options.representation == XtdV2ResidualRepresentation::kHarmonic2 ? 2 : 3;
-  auto residual =
-      MakeV2TiledComponent(options, 2, residual_representation, package_id,
-                           package_key, residual_offset);
-  const auto uncertainty_offset =
-      residual.payload_offset + residual.payload.size();
-  auto uncertainty = MakeV2TiledComponent(options, 3, 4, package_id,
-                                          package_key, uncertainty_offset);
-  const std::uint64_t file_length =
-      uncertainty.payload_offset + uncertainty.payload.size();
+  std::vector<V2Component> tiled_components;
+  tiled_components.reserve(3);
+  if (options.include_residual) {
+    tiled_components.push_back(MakeV2TiledComponent(
+        options, 2, residual_representation, package_id, package_key,
+        next_offset));
+    next_offset = tiled_components.back().payload_offset +
+                  tiled_components.back().payload.size();
+  }
+  if (options.include_uncertainty) {
+    tiled_components.push_back(MakeV2TiledComponent(
+        options, 3, 4, package_id, package_key, next_offset));
+    next_offset = tiled_components.back().payload_offset +
+                  tiled_components.back().payload.size();
+  }
+  std::optional<V2Component> height;
+  if (options.include_height) {
+    height = MakeV2TiledComponent(options, 4, 5, package_id, package_key,
+                                  next_offset);
+    next_offset = height->payload_offset + height->payload.size();
+    tiled_components.push_back(std::move(*height));
+  }
+  const std::uint64_t file_length = next_offset;
 
   Bytes directory(component_count * kV2ComponentEntrySize);
-  std::array<unsigned char, 16> tide_id{};
-  for (std::size_t i = 0; i < tide_id.size(); ++i)
-    tide_id[i] = static_cast<unsigned char>(0x11 + i * 7);
-  PutLe(&directory, 0, static_cast<std::uint32_t>(1));
-  PutLe(&directory, 4, static_cast<std::uint32_t>(1));
-  PutLe(&directory, 8, static_cast<std::uint32_t>(1));
-  PutLe(&directory, 12, static_cast<std::uint32_t>(1 | 8));
-  std::copy(tide_id.begin(), tide_id.end(), directory.begin() + 16);
-  PutLe(&directory, 96, nested_offset);
-  PutLe(&directory, 104, static_cast<std::uint64_t>(nested.size()));
-  std::copy(tide_hash.begin(), tide_hash.end(), directory.begin() + 112);
-  std::copy(tide_hash.begin(), tide_hash.end(), directory.begin() + 144);
+  std::size_t directory_component = 0;
+  if (options.include_tide) {
+    const std::size_t position = directory_component++ * kV2ComponentEntrySize;
+    std::array<unsigned char, 16> tide_id{};
+    if (options.randomize_crypto)
+      randombytes_buf(tide_id.data(), tide_id.size());
+    else
+      for (std::size_t i = 0; i < tide_id.size(); ++i)
+        tide_id[i] = static_cast<unsigned char>(0x11 + i * 7);
+    PutLe(&directory, position, static_cast<std::uint32_t>(1));
+    PutLe(&directory, position + 4, static_cast<std::uint32_t>(1));
+    PutLe(&directory, position + 8, static_cast<std::uint32_t>(1));
+    PutLe(&directory, position + 12, static_cast<std::uint32_t>(1 | 8));
+    std::copy(tide_id.begin(), tide_id.end(),
+              directory.begin() + position + 16);
+    PutLe(&directory, position + 96, nested_offset);
+    PutLe(&directory, position + 104,
+          static_cast<std::uint64_t>(nested.size()));
+    std::copy(tide_hash.begin(), tide_hash.end(),
+              directory.begin() + position + 112);
+    std::copy(tide_hash.begin(), tide_hash.end(),
+              directory.begin() + position + 144);
+  }
 
   const std::uint32_t columns =
       (options.tide.nx + options.tile_width - 1) / options.tile_width;
   const std::uint32_t rows =
       (options.tide.ny + options.tile_height - 1) / options.tile_height;
-  for (std::size_t component_index = 0; component_index < 2;
-       ++component_index) {
-    const auto& component = component_index == 0 ? residual : uncertainty;
-    const std::size_t position = (component_index + 1) * kV2ComponentEntrySize;
+  for (std::size_t component_index = 0;
+       component_index < tiled_components.size(); ++component_index) {
+    const auto& component = tiled_components[component_index];
+    const std::size_t position =
+        directory_component++ * kV2ComponentEntrySize;
     PutLe(&directory, position, component.type);
     PutLe(&directory, position + 4, component.representation);
     PutLe(&directory, position + 8, static_cast<std::uint32_t>(1));
-    PutLe(&directory, position + 12, static_cast<std::uint32_t>(1));
+    // Water level is an optional v2 extension.  Keeping the required flag
+    // clear lets older readers continue to use the current components while
+    // newer readers discover and authenticate the height component.
+    PutLe(&directory, position + 12,
+          static_cast<std::uint32_t>(component.type == 4 ? 0 : 1));
     std::copy(component.id.begin(), component.id.end(),
               directory.begin() + position + 16);
     PutLe(&directory, position + 32, static_cast<std::uint32_t>(1));
@@ -858,13 +940,13 @@ void WriteXtdV2Fixture(const std::filesystem::path& path,
   output.write(reinterpret_cast<const char*>(directory.data()),
                directory.size());
   output.write(reinterpret_cast<const char*>(nested.data()), nested.size());
-  for (const auto* component : {&residual, &uncertainty}) {
-    output.write(reinterpret_cast<const char*>(component->metadata.data()),
-                 component->metadata.size());
-    output.write(reinterpret_cast<const char*>(component->index.data()),
-                 component->index.size());
-    output.write(reinterpret_cast<const char*>(component->payload.data()),
-                 component->payload.size());
+  for (const auto& component : tiled_components) {
+    output.write(reinterpret_cast<const char*>(component.metadata.data()),
+                 component.metadata.size());
+    output.write(reinterpret_cast<const char*>(component.index.data()),
+                 component.index.size());
+    output.write(reinterpret_cast<const char*>(component.payload.data()),
+                 component.payload.size());
   }
   if (!output) throw std::runtime_error("could not write XTD v2 fixture");
 }

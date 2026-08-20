@@ -47,6 +47,11 @@ enum class XtdV2ResidualRepresentation {
 
 struct XtdV2FixtureOptions {
   XtdFixtureOptions tide;
+  Json::Value outer_metadata{Json::objectValue};
+  bool randomize_crypto{false};
+  bool include_tide{true};
+  bool include_residual{true};
+  bool include_uncertainty{true};
   XtdV2ResidualRepresentation representation{
       XtdV2ResidualRepresentation::kHarmonic2};
   std::uint32_t tile_width{2};
@@ -55,6 +60,15 @@ struct XtdV2FixtureOptions {
   std::function<double(std::size_t field, std::uint32_t x, std::uint32_t y)>
       residual_value;
   std::function<bool(std::uint32_t x, std::uint32_t y)> valid;
+  bool include_height{false};
+  std::vector<std::string> height_constituents{"m2", "s2", "k1", "o1",
+                                                "n2", "p1", "k2", "q1"};
+  double height_reference_level_m{5.0};
+  std::string height_datum_id{"test-chart-datum"};
+  std::string height_datum_name{"Synthetic chart datum"};
+  Json::Value height_metadata{Json::objectValue};
+  std::function<double(std::size_t field, std::uint32_t x, std::uint32_t y)>
+      height_value;
 };
 
 void WriteXtdFixture(const std::filesystem::path& path,
