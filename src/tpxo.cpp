@@ -5,22 +5,32 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 #include <fstream>
+#endif
 #include <limits>
 #include <map>
 #include <numbers>
 #include <optional>
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 #include <regex>
+#endif
 #include <set>
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 #include <sstream>
 #include <string_view>
+#endif
 
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 #include <zip.h>
+#endif
 
 #include "environmental_grib/error.h"
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/platform.h"
+#endif
 
 namespace environmental_grib {
 namespace {
@@ -28,6 +38,7 @@ namespace {
 constexpr double kPi = std::numbers::pi_v<double>;
 constexpr double kMjdTideEpoch = 48622.0;
 
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 zip_t* OpenZipArchive(const std::filesystem::path& path, int flags) {
 #ifdef _WIN32
   zip_error_t error;
@@ -287,6 +298,7 @@ std::vector<std::string> ReadUnicode(const NpyArray& array,
   }
   return values;
 }
+#endif
 
 double DaysSinceTideEpoch(TimePoint time) {
   using namespace std::chrono;
@@ -375,7 +387,8 @@ double MajorPrediction(const Harmonics& values, double tide_days,
   for (const auto& [name,z] : values) {
     const auto found = Parameters().find(name);
     if (found == Parameters().end()) {
-      throw ValidationError("unsupported TPXO cache constituent: " + name);
+      throw ValidationError("unsupported harmonic-current constituent: " +
+                            name);
     }
     const auto [f,u] = Nodal(name, astronomy.n, astronomy.p);
     const double theta = 86400.0*found->second.omega*tide_days +
@@ -414,7 +427,8 @@ std::optional<std::complex<double>> Get(const Harmonics& h,
 
 std::complex<double> Required(const Harmonics& h, const std::string& key) {
   const auto value = Get(h,key);
-  if (!value) throw ValidationError("TPXO minor inference requires " + key);
+  if (!value)
+    throw ValidationError("harmonic-current minor inference requires " + key);
   return *value;
 }
 
@@ -480,7 +494,8 @@ std::vector<CurrentGrid> PredictComponentPair(
     const TpxoCache& cache, const std::vector<TimePoint>& times,
     bool infer_minor) {
   if (cache.metadata.get("corrections", "ATLAS").asString() != "ATLAS") {
-    throw ValidationError("native TPXO cache prediction currently requires ATLAS corrections");
+    throw ValidationError(
+        "harmonic-current prediction currently requires ATLAS corrections");
   }
   const std::size_t points=cache.grid.size();
   const auto predicted_u = PredictAtlasHarmonicGrid(
@@ -563,6 +578,7 @@ std::vector<double> PredictAtlasHarmonicGrid(
   return output;
 }
 
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 TpxoCache LoadTpxoCache(const std::filesystem::path& path) {
   zip_t* archive=OpenZipArchive(path,ZIP_RDONLY);
   if (!archive) throw ValidationError("could not read TPXO cache file " + PathToUtf8(path));
@@ -647,6 +663,7 @@ Json::Value InspectTpxoCache(const std::filesystem::path& path) {
   value["point_count"]=Json::UInt64(cache.grid.size()); value["valid"]=true;
   return value;
 }
+#endif
 
 std::vector<CurrentGrid> PredictTpxoCache(const TpxoCache& cache,
                                           const std::vector<TimePoint>& times,
@@ -654,6 +671,7 @@ std::vector<CurrentGrid> PredictTpxoCache(const TpxoCache& cache,
   return PredictComponentPair(cache,times,infer_minor);
 }
 
+#ifndef ENVIRONMENTAL_XTD_RUNTIME_ONLY
 TpxoGenerationResult GenerateFromTpxoCache(
     const std::filesystem::path& input_cache, TimePoint start, int hours,
     int step_hours, const std::filesystem::path& output, bool infer_minor,
@@ -665,5 +683,6 @@ TpxoGenerationResult GenerateFromTpxoCache(
   const auto messages=ScanGribMessages(output);
   return {output,messages.message_count,std::filesystem::file_size(output),InspectGrib(output)};
 }
+#endif
 
 }  // namespace environmental_grib
