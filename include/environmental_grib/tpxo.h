@@ -54,12 +54,12 @@ struct TpxoModelRequest {
 };
 
 TpxoCache LoadTpxoCache(const std::filesystem::path& path);
-void WriteTpxoCache(const std::filesystem::path& path,
-                    const TpxoCache& cache, bool overwrite = false);
+void WriteTpxoCache(const std::filesystem::path& path, const TpxoCache& cache,
+                    bool overwrite = false);
 Json::Value InspectTpxoCache(const std::filesystem::path& path);
-std::vector<CurrentGrid> PredictTpxoCache(
-    const TpxoCache& cache, const std::vector<TimePoint>& times,
-    bool infer_minor = true);
+std::vector<CurrentGrid> PredictTpxoCache(const TpxoCache& cache,
+                                          const std::vector<TimePoint>& times,
+                                          bool infer_minor = true);
 // Predict one harmonic component without changing its units. Coefficients use
 // constituent-major layout: [constituent][point]. Results use
 // time-major layout: [time][point].
@@ -68,6 +68,11 @@ std::vector<double> PredictAtlasHarmonicGrid(
     const std::vector<std::complex<double>>& coefficient_major,
     std::size_t point_count, const std::vector<TimePoint>& times,
     bool infer_minor = true);
+// Applies a fixed time translation to one complex harmonic coefficient. A
+// positive prediction_time_shift_seconds moves extrema later in time.
+std::complex<double> ShiftAtlasHarmonicCoefficient(
+    const std::string& constituent, std::complex<double> coefficient,
+    double prediction_time_shift_seconds);
 TpxoGenerationResult GenerateFromTpxoCache(
     const std::filesystem::path& input_cache, TimePoint start, int hours,
     int step_hours, const std::filesystem::path& output,
@@ -85,8 +90,7 @@ std::filesystem::path ResolveTpxo10AtlasHeightDirectory(
 TpxoGenerationResult GenerateFromTpxo10AtlasModel(
     const TpxoModelRequest& request);
 Json::Value PrepareTpxo10Cache(const std::filesystem::path& model_directory,
-                               const BoundingBox& bbox,
-                               double grid_spacing_deg,
+                               const BoundingBox& bbox, double grid_spacing_deg,
                                const std::filesystem::path& output,
                                bool overwrite = false);
 

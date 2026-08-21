@@ -41,11 +41,13 @@ constexpr std::uint32_t kTypeTide = 1;
 constexpr std::uint32_t kTypeResidual = 2;
 constexpr std::uint32_t kTypeUncertainty = 3;
 constexpr std::uint32_t kTypeWaterLevel = 4;
+constexpr std::uint32_t kTypeWaterLevelQuality = 5;
 constexpr std::uint32_t kRepEmbeddedV1 = 1;
 constexpr std::uint32_t kRepHarmonic2 = 2;
 constexpr std::uint32_t kRepMonthly12 = 3;
 constexpr std::uint32_t kRepUncertainty1 = 4;
 constexpr std::uint32_t kRepWaterLevelHarmonics1 = 5;
+constexpr std::uint32_t kRepWaterLevelQuality1 = 6;
 constexpr std::uint32_t kFlagRequired = 1;
 constexpr std::uint32_t kFlagNested = 8;
 constexpr std::uint32_t kEmptyTile = 1;
@@ -360,8 +362,12 @@ Bracket LatBracket(double v, double o, double s, std::uint32_t n) {
   double p = (v - o) / s;
   if (p < -1e-10 || p > n - 1 + 1e-10) return {};
   p = std::clamp(p, 0.0, static_cast<double>(n - 1));
+  const double nearest = std::round(p);
+  if (std::abs(p - nearest) <= 1e-10) {
+    const auto node = static_cast<std::uint32_t>(nearest);
+    return {node, node, 0.0, true};
+  }
   auto a = static_cast<std::uint32_t>(std::floor(p));
-  if (a == n - 1) return {n - 2, n - 1, 1, true};
   return {a, a + 1, p - a, true};
 }
 Bracket LonBracket(double v, double o, double s, std::uint32_t n) {
@@ -369,6 +375,11 @@ Bracket LonBracket(double v, double o, double s, std::uint32_t n) {
   if (std::abs(span - 360.0) <= std::max(1e-8, std::abs(span) * 1e-10)) {
     double p = std::fmod((v - o) / s, static_cast<double>(n));
     if (p < 0) p += n;
+    const double nearest = std::round(p);
+    if (std::abs(p - nearest) <= 1e-10) {
+      const auto node = static_cast<std::uint32_t>(nearest) % n;
+      return {node, node, 0.0, true};
+    }
     auto a = static_cast<std::uint32_t>(std::floor(p));
     return {a, (a + 1) % n, p - a, true};
   }
@@ -397,8 +408,7 @@ std::shared_ptr<ResidualTile> ParseFieldTile(
     const std::array<unsigned char, 4>& expected_magic,
     const std::string& description) {
   if (raw.size() < 32 ||
-      !std::equal(raw.begin(), raw.begin() + 4,
-                  expected_magic.begin()))
+      !std::equal(raw.begin(), raw.begin() + 4, expected_magic.begin()))
     Invalid(description + " tile magic is invalid");
   const auto version = ReadLe<std::uint16_t>(&raw[4]);
   const auto width = ReadLe<std::uint16_t>(&raw[8]),
@@ -412,13 +422,12 @@ std::shared_ptr<ResidualTile> ParseFieldTile(
              declared = ReadLe<std::uint32_t>(&raw[28]);
   const auto expected_cells = static_cast<std::uint32_t>(e.width) * e.height;
   const auto expected_mask = (expected_cells + 7) / 8;
-  const auto expected =
-      Add(Add(32, expected_mask, description + " mask"),
-          Add(Mul(fields, 4, description + " scales"),
-              Mul(Mul(fields, cells, description + " values"), 2,
-                  description + " values"),
-              description + " fields"),
-          description + " tile");
+  const auto expected = Add(Add(32, expected_mask, description + " mask"),
+                            Add(Mul(fields, 4, description + " scales"),
+                                Mul(Mul(fields, cells, description + " values"),
+                                    2, description + " values"),
+                                description + " fields"),
+                            description + " tile");
   if (version != 1 || width != e.width || height != e.height ||
       fields != expected_fields || cells != expected_cells ||
       mask_bytes != expected_mask || encoding > 1 || declared != raw.size() ||
@@ -434,8 +443,7 @@ std::shared_ptr<ResidualTile> ParseFieldTile(
     Invalid(description + " mask padding is nonzero");
   for (std::uint32_t i = 0; i < fields; ++i, pos += 4) {
     float s = ReadF32(&raw[pos]);
-    if (!std::isfinite(s) || s < 0)
-      Invalid(description + " scale invalid");
+    if (!std::isfinite(s) || s < 0) Invalid(description + " scale invalid");
     tile->scales.push_back(s);
   }
   tile->values.reserve(static_cast<std::size_t>(fields) * cells);
@@ -558,15 +566,13 @@ public:
                       description_ + " metadata");
     metadata_ = ParseJson(metadata_raw_, description_ + " metadata");
     grid_ = ParseGrid(metadata_);
-    fields_ = explicit_fields
-                  ? explicit_fields
-                  : component.representation == kRepHarmonic2   ? 10
-                    : component.representation == kRepMonthly12 ? 24
-                    : component.representation ==
-                              kRepWaterLevelHarmonics1 &&
-                          metadata_["constituents"].isArray()
-                        ? metadata_["constituents"].size() * 2
-                        : 0;
+    fields_ = explicit_fields                             ? explicit_fields
+              : component.representation == kRepHarmonic2 ? 10
+              : component.representation == kRepMonthly12 ? 24
+              : component.representation == kRepWaterLevelHarmonics1 &&
+                      metadata_["constituents"].isArray()
+                  ? metadata_["constituents"].size() * 2
+                  : 0;
     if (!fields_) Invalid("unsupported residual representation");
     index_raw_ = source_->Read(component.index_offset, component.index_length,
                                description_ + " index");
@@ -609,9 +615,9 @@ public:
         if (!bx.valid || !by.valid) continue;
         const std::array<std::uint32_t, 4> xs{bx.a, bx.b, bx.a, bx.b},
             ys{by.a, by.a, by.b, by.b};
-        const std::array<double, 4> weights{
-            (1 - bx.f) * (1 - by.f), bx.f * (1 - by.f),
-            (1 - bx.f) * by.f, bx.f * by.f};
+        const std::array<double, 4> weights{(1 - bx.f) * (1 - by.f),
+                                            bx.f * (1 - by.f),
+                                            (1 - bx.f) * by.f, bx.f * by.f};
         bool valid = true;
         std::array<std::shared_ptr<ResidualTile>, 4> tiles;
         std::array<std::size_t, 4> locals{};
@@ -636,8 +642,7 @@ public:
             const auto cells = static_cast<std::size_t>(tiles[corner]->width) *
                                tiles[corner]->height;
             value += weights[corner] *
-                     tiles[corner]
-                         ->values[field * cells + locals[corner]] *
+                     tiles[corner]->values[field * cells + locals[corner]] *
                      tiles[corner]->scales[field];
           }
           result.fields[field][p] = value;
@@ -886,16 +891,15 @@ public:
               sampled.fields[constituent * 2 + 1][point]};
         }
       }
-    const auto predicted = PredictAtlasHarmonicGrid(
-        constituents_, coefficients, points, times, infer_minor);
+    const auto predicted = PredictAtlasHarmonicGrid(constituents_, coefficients,
+                                                    points, times, infer_minor);
     std::vector<TideHeightGrid> result;
     result.reserve(times.size());
     for (std::size_t time_index = 0; time_index < times.size(); ++time_index) {
       TideHeightGrid grid;
       grid.time = times[time_index];
       grid.grid = output;
-      grid.height_m.resize(points,
-                           std::numeric_limits<double>::quiet_NaN());
+      grid.height_m.resize(points, std::numeric_limits<double>::quiet_NaN());
       grid.mask.assign(points, 1);
       grid.datum_id = datum_id_;
       grid.datum_name = datum_name_;
@@ -916,6 +920,44 @@ public:
         std::chrono::duration<double, std::milli>(Clock::now() - started)
             .count();
     fields_.AddInterpolationMs(total - (fields_.stats().load_ms - load_before));
+    return result;
+  }
+
+  TideHeightHarmonics Sample(const RegularGrid& output) {
+    if (output.latitudes.empty() || output.longitudes.empty())
+      throw ValidationError("water-level output grid is empty");
+    auto sampled = fields_.Sample(output);
+    const auto points = output.size();
+    TideHeightHarmonics result;
+    result.grid = output;
+    result.constituents = constituents_;
+    result.coefficients_m.resize(constituents_.size() * points);
+    result.mask.assign(points, 1);
+    result.reference_level_m = reference_level_m_;
+    result.datum_id = datum_id_;
+    result.datum_name = datum_name_;
+    for (std::size_t point = 0; point < points; ++point) {
+      if (!sampled.valid[point]) {
+        for (std::size_t constituent = 0; constituent < constituents_.size();
+             ++constituent) {
+          result.coefficients_m[constituent * points + point] = {
+              std::numeric_limits<double>::quiet_NaN(),
+              std::numeric_limits<double>::quiet_NaN()};
+        }
+        continue;
+      }
+      result.mask[point] = 0;
+      for (std::size_t constituent = 0; constituent < constituents_.size();
+           ++constituent) {
+        result.coefficients_m[constituent * points + point] = {
+            sampled.fields[constituent * 2][point],
+            sampled.fields[constituent * 2 + 1][point]};
+      }
+    }
+    if (std::none_of(result.mask.begin(), result.mask.end(),
+                     [](std::uint8_t value) { return value != 0; }))
+      result.mask.clear();
+    result.Validate();
     return result;
   }
 
@@ -983,6 +1025,55 @@ void ValidateUncertaintyTile(const Bytes& raw, const TileIndex& entry) {
   }
 }
 
+void ValidateHeightQualityTile(const Bytes& raw, const TileIndex& entry) {
+  constexpr std::uint32_t kContinuousFields = 3;
+  constexpr std::uint32_t kQualityBytesPerCell = 3;
+  if (raw.size() < 32 ||
+      !std::equal(raw.begin(), raw.begin() + 4,
+                  std::array<unsigned char, 4>{'X', 'H', 'Q', '1'}.begin()))
+    Invalid("water-level quality tile magic is invalid");
+  const auto width = ReadLe<std::uint16_t>(&raw[8]);
+  const auto height = ReadLe<std::uint16_t>(&raw[10]);
+  const auto cells = ReadLe<std::uint32_t>(&raw[16]);
+  const auto mask_bytes = ReadLe<std::uint32_t>(&raw[20]);
+  const auto expected_cells = static_cast<std::uint32_t>(entry.width) *
+                              static_cast<std::uint32_t>(entry.height);
+  const auto expected_mask = (expected_cells + 7) / 8;
+  const auto expected =
+      Add(Add(Add(32, expected_mask, "water-level quality mask"),
+              Mul(kContinuousFields, 4, "water-level quality scales"),
+              "water-level quality continuous header"),
+          Add(Mul(Mul(kContinuousFields, expected_cells,
+                      "water-level quality continuous values"),
+                  2, "water-level quality continuous bytes"),
+              Mul(kQualityBytesPerCell, expected_cells,
+                  "water-level quality bytes"),
+              "water-level quality fields"),
+          "water-level quality tile");
+  if (ReadLe<std::uint16_t>(&raw[4]) != 1 ||
+      ReadLe<std::uint16_t>(&raw[6]) != kRepWaterLevelQuality1 ||
+      width != entry.width || height != entry.height ||
+      ReadLe<std::uint16_t>(&raw[12]) != kContinuousFields ||
+      ReadLe<std::uint16_t>(&raw[14]) != 0 || cells != expected_cells ||
+      mask_bytes != expected_mask || ReadLe<std::uint32_t>(&raw[24]) != 0 ||
+      ReadLe<std::uint32_t>(&raw[28]) != raw.size() || expected != raw.size())
+    Invalid("water-level quality tile header is inconsistent");
+  if (cells % 8 != 0 &&
+      (raw[32 + mask_bytes - 1] & ~((1U << (cells % 8)) - 1U)))
+    Invalid("water-level quality mask padding is nonzero");
+  std::size_t cursor = 32 + mask_bytes;
+  for (std::uint32_t field = 0; field < kContinuousFields; ++field) {
+    const float scale = ReadF32(&raw[cursor]);
+    if (!std::isfinite(scale) || scale <= 0.0F)
+      Invalid("water-level quality scale is invalid");
+    cursor += 4;
+  }
+  cursor += static_cast<std::size_t>(kContinuousFields) * cells * 2;
+  for (std::uint32_t cell = 0; cell < cells; ++cell)
+    if (raw[cursor + cell] > 3)
+      Invalid("water-level support class is invalid");
+}
+
 class TiledComponentVerifier {
 public:
   TiledComponentVerifier(std::shared_ptr<RandomAccessSource> source,
@@ -1032,7 +1123,10 @@ public:
         Invalid("uncertainty tile " + std::to_string(entry.id) +
                 " decompression failed");
       }
-      ValidateUncertaintyTile(plaintext, entry);
+      if (component_.type == kTypeWaterLevelQuality)
+        ValidateHeightQualityTile(plaintext, entry);
+      else
+        ValidateUncertaintyTile(plaintext, entry);
       ++stats_.tiles_loaded;
       stats_.encrypted_bytes += encrypted.size();
       stats_.compressed_bytes += compressed.size();
@@ -1139,6 +1233,7 @@ public:
     const Component* residual = nullptr;
     const Component* uncertainty = nullptr;
     const Component* height = nullptr;
+    const Component* height_quality = nullptr;
     for (const auto& c : components_) {
       if (c.type == kTypeTide) {
         if (c.representation != kRepEmbeddedV1)
@@ -1171,6 +1266,10 @@ public:
         if (c.representation != kRepWaterLevelHarmonics1)
           Invalid("unsupported water-level representation");
         height = &c;
+      } else if (c.type == kTypeWaterLevelQuality) {
+        if (c.representation != kRepWaterLevelQuality1)
+          Invalid("unsupported water-level quality representation");
+        height_quality = &c;
       } else if (c.flags & kFlagRequired)
         Invalid("unknown required component");
     }
@@ -1192,6 +1291,11 @@ public:
       status_.height_available = true;
       status_.height_datum_id = height_->datum_id();
       status_.height_datum_name = height_->datum_name();
+    }
+    if (height_quality) {
+      height_quality_ = std::make_unique<TiledComponentVerifier>(
+          source_, outer_, *height_quality, package_key_);
+      status_.height_quality_available = true;
     }
   }
   void UnwrapAndAuthenticate() {
@@ -1263,13 +1367,19 @@ public:
       }
     return result;
   }
-  std::vector<TideHeightGrid> PredictHeight(
-      const RegularGrid& grid, const std::vector<TimePoint>& times,
-      bool infer) {
+  std::vector<TideHeightGrid> PredictHeight(const RegularGrid& grid,
+                                            const std::vector<TimePoint>& times,
+                                            bool infer) {
     if (!height_)
       throw ValidationError(
           "XTD package has no water-level harmonic component");
     return height_->Predict(grid, times, infer);
+  }
+  TideHeightHarmonics SampleHeightHarmonics(const RegularGrid& grid) {
+    if (!height_)
+      throw ValidationError(
+          "XTD package has no water-level harmonic component");
+    return height_->Sample(grid);
   }
   Json::Value Verify() {
     Json::Value v(Json::objectValue);
@@ -1303,6 +1413,9 @@ public:
     if (height_)
       v["water_level_harmonics"]["tiles_loaded"] =
           Json::UInt64(height_->Verify().tiles_loaded);
+    if (height_quality_)
+      v["water_level_quality"]["tiles_loaded"] =
+          Json::UInt64(height_quality_->Verify().tiles_loaded);
     v["valid"] = true;
     return v;
   }
@@ -1312,6 +1425,8 @@ public:
     if (residual_) s.residual = residual_->stats();
     if (uncertainty_) s.uncertainty = uncertainty_->statistics();
     if (height_) s.height = height_->statistics();
+    if (height_quality_)
+      s.height_quality = height_quality_->statistics();
     s.outer_bytes_read = source_->bytes_read();
     return s;
   }
@@ -1331,6 +1446,7 @@ public:
   std::unique_ptr<ResidualReader> residual_;
   std::unique_ptr<TiledComponentVerifier> uncertainty_;
   std::unique_ptr<HeightReader> height_;
+  std::unique_ptr<TiledComponentVerifier> height_quality_;
 };
 
 XtdPackageReader::XtdPackageReader(const std::filesystem::path& p,
@@ -1357,6 +1473,10 @@ std::vector<TideHeightGrid> XtdPackageReader::PredictHeight(
     bool infer_minor_tides) {
   return impl_->PredictHeight(grid, times, infer_minor_tides);
 }
+TideHeightHarmonics XtdPackageReader::SampleHeightHarmonics(
+    const RegularGrid& grid) {
+  return impl_->SampleHeightHarmonics(grid);
+}
 void TideHeightGrid::Validate() const {
   if (height_m.size() != grid.size())
     throw ValidationError("height array must match the grid shape");
@@ -1364,6 +1484,19 @@ void TideHeightGrid::Validate() const {
     throw ValidationError("height mask must match the grid shape");
   if (datum_id.empty() || datum_name.empty())
     throw ValidationError("height result must identify its vertical datum");
+}
+void TideHeightHarmonics::Validate() const {
+  if (constituents.empty() ||
+      coefficients_m.size() != constituents.size() * grid.size())
+    throw ValidationError(
+        "height harmonic coefficients must match the grid shape");
+  if (!mask.empty() && mask.size() != grid.size())
+    throw ValidationError("height harmonic mask must match the grid shape");
+  if (!std::isfinite(reference_level_m))
+    throw ValidationError("height harmonic reference level is invalid");
+  if (datum_id.empty() || datum_name.empty())
+    throw ValidationError(
+        "height harmonics must identify their vertical datum");
 }
 Json::Value XtdPackageReader::VerifyAllComponents() { return impl_->Verify(); }
 Json::Value InspectXtdPackage(const std::filesystem::path& p) {
@@ -1377,6 +1510,8 @@ Json::Value InspectXtdPackage(const std::filesystem::path& p) {
       r.status().climatology_available;
   v["capabilities"]["uncertainty"] = r.status().uncertainty_available;
   v["capabilities"]["water_level_height"] = r.status().height_available;
+  v["capabilities"]["water_level_quality"] =
+      r.status().height_quality_available;
   if (r.status().height_available) {
     v["water_level"]["datum_id"] = r.status().height_datum_id;
     v["water_level"]["datum_name"] = r.status().height_datum_name;

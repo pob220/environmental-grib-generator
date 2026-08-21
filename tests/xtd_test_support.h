@@ -69,6 +69,14 @@ struct XtdV2FixtureOptions {
   Json::Value height_metadata{Json::objectValue};
   std::function<double(std::size_t field, std::uint32_t x, std::uint32_t y)>
       height_value;
+  bool include_height_quality{false};
+  Json::Value height_quality_metadata{Json::objectValue};
+  std::function<double(std::size_t field, std::uint32_t x, std::uint32_t y)>
+      height_quality_value;
+  std::function<std::uint8_t(std::uint32_t x, std::uint32_t y)>
+      height_support_class;
+  std::function<std::uint16_t(std::uint32_t x, std::uint32_t y)>
+      height_observation_count;
 };
 
 void WriteXtdFixture(const std::filesystem::path& path,

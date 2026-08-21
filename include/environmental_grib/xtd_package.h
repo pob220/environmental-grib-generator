@@ -1,5 +1,6 @@
 #pragma once
 
+#include <complex>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -30,6 +31,7 @@ struct XtdPackageStatus {
   bool climatology_available{};
   bool uncertainty_available{};
   bool height_available{};
+  bool height_quality_available{};
   std::string residual_representation;
   std::string height_datum_id;
   std::string height_datum_name;
@@ -44,6 +46,7 @@ struct XtdPackageStatistics {
   XtdStatistics residual;
   XtdStatistics uncertainty;
   XtdStatistics height;
+  XtdStatistics height_quality;
   std::uint64_t outer_bytes_read{};
 };
 
@@ -52,6 +55,21 @@ struct TideHeightGrid {
   RegularGrid grid;
   std::vector<double> height_m;
   std::vector<std::uint8_t> mask;
+  std::string datum_id;
+  std::string datum_name;
+
+  void Validate() const;
+  [[nodiscard]] bool has_mask() const { return !mask.empty(); }
+};
+
+// Constituent-major water-level coefficients sampled from an XTD.  Offline
+// XTD-to-XTD authoring uses this value without reopening the raw source model.
+struct TideHeightHarmonics {
+  RegularGrid grid;
+  std::vector<std::string> constituents;
+  std::vector<std::complex<double>> coefficients_m;
+  std::vector<std::uint8_t> mask;
+  double reference_level_m{};
   std::string datum_id;
   std::string datum_name;
 
@@ -77,9 +95,10 @@ public:
                                    const std::vector<TimePoint>& times,
                                    OfflineCurrentMode mode,
                                    bool infer_minor_tides = true);
-  std::vector<TideHeightGrid> PredictHeight(
-      const RegularGrid& output_grid, const std::vector<TimePoint>& times,
-      bool infer_minor_tides = true);
+  std::vector<TideHeightGrid> PredictHeight(const RegularGrid& output_grid,
+                                            const std::vector<TimePoint>& times,
+                                            bool infer_minor_tides = true);
+  TideHeightHarmonics SampleHeightHarmonics(const RegularGrid& output_grid);
   Json::Value VerifyAllComponents();
 
 private:

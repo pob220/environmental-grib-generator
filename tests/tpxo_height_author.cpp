@@ -42,15 +42,15 @@ std::string Sha256(const std::filesystem::path& path) {
   return result;
 }
 
-void WriteProvenance(const std::filesystem::path& xtd,
+void WriteProvenance(const std::filesystem::path& xtdt,
                      const eg::TpxoHeightCache& cache, double spacing) {
   Json::Value provenance(Json::objectValue);
-  provenance["schema"] = "xtd-provenance";
+  provenance["schema"] = "xtdt-provenance";
   provenance["schema_version"] = 1;
-  provenance["xtd_file"] = xtd.filename().string();
-  provenance["xtd_sha256"] = Sha256(xtd);
-  provenance["xtd_bytes"] = Json::UInt64(std::filesystem::file_size(xtd));
-  provenance["package_id"] = eg::InspectXtdPackage(xtd)["package_id"];
+  provenance["xtdt_file"] = xtdt.filename().string();
+  provenance["xtdt_sha256"] = Sha256(xtdt);
+  provenance["xtdt_bytes"] = Json::UInt64(std::filesystem::file_size(xtdt));
+  provenance["package_id"] = eg::InspectXtdPackage(xtdt)["package_id"];
   provenance["created_utc"] = eg::FormatUtcDateTime(
       std::chrono::floor<std::chrono::seconds>(
           std::chrono::system_clock::now()));
@@ -76,7 +76,7 @@ void WriteProvenance(const std::filesystem::path& xtd,
   provenance["interpolation"]["reason"] =
       "Represent narrow estuaries and channels absent from the ocean-model "
       "land mask; accuracy remains subject to station validation.";
-  provenance["quantization_scale_m"] = 0.0002;
+  provenance["quantization_scale_m"] = 0.0005;
   provenance["vertical_datum"]["id"] = cache.vertical_datum_id;
   provenance["vertical_datum"]["name"] = cache.vertical_datum_name;
   provenance["vertical_datum"]["warning"] =
@@ -85,7 +85,7 @@ void WriteProvenance(const std::filesystem::path& xtd,
       "transformation.";
   for (const auto& constituent : cache.constituents)
     provenance["constituents"].append(constituent);
-  const auto path = std::filesystem::path(xtd.string() + ".prv");
+  const auto path = std::filesystem::path(xtdt.string() + ".prv");
   std::ofstream output(path);
   Json::StreamWriterBuilder writer;
   writer["indentation"] = "  ";
@@ -97,7 +97,7 @@ void WriteProvenance(const std::filesystem::path& xtd,
 int main(int argc, char** argv) {
   if (argc != 8) {
     std::cerr << "usage: environmental_grib_tpxo_height_author "
-                 "MODEL_DIR WEST SOUTH EAST NORTH SPACING_DEG OUTPUT.xtd\n";
+                 "MODEL_DIR WEST SOUTH EAST NORTH SPACING_DEG OUTPUT.xtdt\n";
     return 2;
   }
   try {
@@ -114,6 +114,12 @@ int main(int argc, char** argv) {
     options.include_residual = false;
     options.include_uncertainty = false;
     options.include_height = true;
+    options.outer_metadata["package_profile"] = "xtidal-tide-v1";
+    options.outer_metadata["recommended_extension"] = ".xtdt";
+    options.outer_metadata["capabilities"]["water_level_harmonics"] = true;
+    options.outer_metadata["capabilities"]["tidal_current_harmonics"] = false;
+    options.outer_metadata["capabilities"]["water_level_quality"] = false;
+    options.outer_metadata["capabilities"]["tidal_current_quality"] = false;
     options.tide.nx = static_cast<std::uint32_t>(grid.longitudes.size());
     options.tide.ny = static_cast<std::uint32_t>(grid.latitudes.size());
     options.tide.west = bbox.west;
@@ -125,7 +131,9 @@ int main(int argc, char** argv) {
     options.tide.lon_step = options.tide.lat_step = spacing;
     options.tile_width = 64;
     options.tile_height = 64;
-    options.quantization_scale = 0.0002F;
+    // Half-millimetre quantisation covers extreme global tidal amplitudes
+    // while remaining far below source-model and gauge uncertainty.
+    options.quantization_scale = 0.0005F;
     options.height_reference_level_m = 0.0;
     options.height_datum_id = cache.vertical_datum_id;
     options.height_datum_name = cache.vertical_datum_name;
