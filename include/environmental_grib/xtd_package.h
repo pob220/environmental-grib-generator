@@ -77,6 +77,23 @@ struct TideHeightHarmonics {
   [[nodiscard]] bool has_mask() const { return !mask.empty(); }
 };
 
+// Local quality information carried alongside water-level harmonics.  The
+// continuous uncertainty fields are bilinearly sampled.  Support class and
+// observation count use the nearest grid node and therefore describe the
+// local authoring support without inventing fractional classifications.
+struct TideHeightQualityGrid {
+  RegularGrid grid;
+  std::vector<double> harmonic_sigma_m;
+  std::vector<double> datum_sigma_m;
+  std::vector<double> nearest_observation_distance_km;
+  std::vector<std::uint8_t> support_class;
+  std::vector<std::uint16_t> observation_count;
+  std::vector<std::uint8_t> mask;
+
+  void Validate() const;
+  [[nodiscard]] bool has_mask() const { return !mask.empty(); }
+};
+
 class XtdPackageReader {
 public:
   explicit XtdPackageReader(const std::filesystem::path& path,
@@ -99,6 +116,7 @@ public:
                                             const std::vector<TimePoint>& times,
                                             bool infer_minor_tides = true);
   TideHeightHarmonics SampleHeightHarmonics(const RegularGrid& output_grid);
+  TideHeightQualityGrid SampleHeightQuality(const RegularGrid& output_grid);
   Json::Value VerifyAllComponents();
 
 private:

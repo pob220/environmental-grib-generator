@@ -372,8 +372,7 @@ void WriteMetNoFixture(const std::filesystem::path& path) {
        "MET Norway field mapping");
     fields.push_back(variable);
   }
-  const std::string time_units =
-      "seconds since 1970-01-01 00:00:00 +00:00";
+  const std::string time_units = "seconds since 1970-01-01 00:00:00 +00:00";
   for (const int variable : {time, reference})
     Nc(nc_put_att_text(file, variable, "units", time_units.size(),
                        time_units.c_str()),
@@ -398,10 +397,10 @@ void WriteMetNoFixture(const std::filesystem::path& path) {
      "MET Norway earth radius");
   Nc(nc_enddef(file), "end MET Norway definitions");
   const auto reference_time = eg::ParseUtcDateTime("2026-07-27T00:00:00Z");
-  const double epoch = static_cast<double>(
-      std::chrono::duration_cast<std::chrono::seconds>(
-          reference_time.time_since_epoch())
-          .count());
+  const double epoch =
+      static_cast<double>(std::chrono::duration_cast<std::chrono::seconds>(
+                              reference_time.time_since_epoch())
+                              .count());
   const double times[] = {epoch,           epoch + 3600.0,  epoch + 7200.0,
                           epoch + 10800.0, epoch + 14400.0, epoch + 18000.0};
   const double axis[] = {-300000.0, -200000.0, -100000.0, 0.0,
@@ -410,8 +409,8 @@ void WriteMetNoFixture(const std::filesystem::path& path) {
   Nc(nc_put_var_double(file, reference, &epoch), "MET Norway reference value");
   Nc(nc_put_var_double(file, x, axis), "MET Norway x values");
   Nc(nc_put_var_double(file, y, axis), "MET Norway y values");
-  const std::array<double, 8> values{
-      285.0, 1.0, 270.0, 10.0, 15.0, 0.6, 101500.0, 0.75};
+  const std::array<double, 8> values{285.0, 1.0, 270.0,    10.0,
+                                     15.0,  0.6, 101500.0, 0.75};
   for (std::size_t field = 0; field < fields.size(); ++field) {
     std::vector<double> data(6 * 7 * 7, values[field]);
     Nc(nc_put_var_double(file, fields[field], data.data()),
@@ -509,10 +508,8 @@ int main() {
         "job protocol secret environment mapping");
   const auto capabilities = eg::GeneratorCapabilitiesJson();
   Check(capabilities["schemaVersion"].asInt() == 1 &&
-            capabilities["operations"][0].asString() ==
-                "generateEnvironment" &&
-            capabilities["weatherProviders"][5].asString() ==
-                "metno_nordic" &&
+            capabilities["operations"][0].asString() == "generateEnvironment" &&
+            capabilities["weatherProviders"][5].asString() == "metno_nordic" &&
             capabilities["weatherPresets"][3].asString() == "all",
         "job protocol capabilities");
   int retry_attempts = 0;
@@ -674,6 +671,44 @@ int main() {
       {predictor_time}, false);
   Check(Near(predictor_reordered.front(), predictor.front()),
         "ATLAS component prediction is constituent-order independent");
+  const auto epoch = eg::ParseUtcDateTime("1992-01-01T00:00:00Z");
+  const auto phasor = [epoch](const std::string& constituent) {
+    const auto cosine = eg::PredictAtlasHarmonicGrid(
+                            {constituent}, {{1.0, 0.0}}, 1, {epoch}, false)
+                            .front();
+    const auto negative_sine =
+        eg::PredictAtlasHarmonicGrid({constituent}, {{0.0, 1.0}}, 1, {epoch},
+                                     false)
+            .front();
+    return std::complex<double>{cosine, -negative_sine};
+  };
+  const auto m2_phasor = phasor("m2");
+  Check(std::abs(phasor("m3") + std::polar(std::pow(std::abs(m2_phasor), 1.5),
+                                           1.5 * std::arg(m2_phasor))) < 1e-9,
+        "M3 uses the Doodson branch of one-and-a-half M2 arguments");
+  Check(std::abs(phasor("m6") - std::pow(m2_phasor, 3)) < 1e-9,
+        "M6 inherits three M2 astronomical arguments");
+  Check(std::abs(phasor("s4") - std::pow(phasor("s2"), 2)) < 1e-9,
+        "S4 inherits two S2 astronomical arguments");
+  Check(std::abs(phasor("m8") - std::pow(m2_phasor, 4)) < 2e-9,
+        "M8 inherits four M2 astronomical arguments");
+  Check(std::abs(phasor("n4") - std::pow(phasor("n2"), 2)) < 2e-9,
+        "N4 inherits two N2 astronomical arguments");
+  Check(std::abs(phasor("mks2") - phasor("m2") * phasor("k2") / phasor("s2")) <
+            2e-9,
+        "MKS2 inherits the M2 plus K2 minus S2 argument");
+  const std::vector<std::string> ticon3_constituents{
+      "2n2", "2q1", "eps2", "j1",  "k1",  "k2",  "l2", "lda2", "m1",   "m2",
+      "m3",  "m4",  "m6",   "m8",  "ma2", "mb2", "mf", "mu2",  "mks2", "mm",
+      "mn4", "ms4", "msf",  "msq", "mtm", "n2",  "n4", "nu2",  "o1",   "oo1",
+      "p1",  "q1",  "r2",   "s1",  "s2",  "s3",  "s4", "sa",   "ssa",  "t2"};
+  const std::vector<std::complex<double>> ticon3_unit_coefficients(
+      ticon3_constituents.size(), {1.0, 0.0});
+  const auto all_ticon3 = eg::PredictAtlasHarmonicGrid(
+      ticon3_constituents, ticon3_unit_coefficients, 1, {predictor_time},
+      false);
+  Check(all_ticon3.size() == 1 && std::isfinite(all_ticon3.front()),
+        "all 40 canonical TICON-3 constituents are predicted");
   ExpectValidation(
       [&] {
         eg::PredictAtlasHarmonicGrid({"m2", "m2"}, predictor_coefficients, 1,
@@ -706,13 +741,11 @@ int main() {
   const auto start = eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
   Check(eg::FormatUtcDateTime(start) == "2026-07-01T00:00:00Z",
         "UTC round trip");
-  Check(eg::FormatUtcDateTime(
-            eg::ParseUtcDateTime("2026-07-01T01:00:00+01:00")) ==
-            "2026-07-01T00:00:00Z",
+  Check(eg::FormatUtcDateTime(eg::ParseUtcDateTime(
+            "2026-07-01T01:00:00+01:00")) == "2026-07-01T00:00:00Z",
         "timezone-qualified provider input normalizes to UTC");
-  ExpectValidation(
-      [] { eg::ParseUtcDateTime("2026-07-01T01:00:00"); },
-      "timezone-free provider input rejected");
+  ExpectValidation([] { eg::ParseUtcDateTime("2026-07-01T01:00:00"); },
+                   "timezone-free provider input rejected");
   Check(eg::BuildTimeSequence(start, 6, 3).size() == 3, "time sequence count");
   ExpectValidation([&] { eg::BuildTimeSequence(start, 5, 2); },
                    "non-divisible time range rejected");
@@ -1027,8 +1060,7 @@ int main() {
   Check(parsed_inventory.size() == 5 && parsed_inventory[1].offset == 100,
         "HRRR inventory parser");
   const auto hrrr_marine = eg::HrrrVariablesForPreset("marine");
-  Check(hrrr_marine.contains("var_GUST") &&
-            hrrr_marine.contains("var_APCP") &&
+  Check(hrrr_marine.contains("var_GUST") && hrrr_marine.contains("var_APCP") &&
             hrrr_marine.contains("var_TCDC"),
         "HRRR marine preset includes gust, precipitation, and cloud");
   const auto hrrr_path = Temp("hrrr.grb");

@@ -690,6 +690,7 @@ V2Component MakeV2TiledComponent(
     metadata["support_classes"]["1"] = "background-only";
     metadata["support_classes"]["2"] = "observation-constrained";
     metadata["support_classes"]["3"] = "estuary-observation-constrained";
+    metadata["support_classes"]["4"] = "independent-model-fallback";
     for (const auto& name : options.height_quality_metadata.getMemberNames())
       metadata[name] = options.height_quality_metadata[name];
   } else {

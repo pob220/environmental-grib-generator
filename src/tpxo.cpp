@@ -347,11 +347,17 @@ const std::map<std::string, ConstituentParameters>& Parameters() {
       {"p1", {6.110181633, 7.252295e-5}},
       {"k2", {3.487600001, 1.458423e-4}},
       {"q1", {5.877717569, 6.495854e-5}},
+      // Additional TICON-3 terms.  Equilibrium arguments use the IHO
+      // Extended Doodson coefficients evaluated at the ATLAS epoch; angular
+      // frequencies are cross-checked against pyTMD's Doodson table.
+      {"2q1", {3.913695959174, 6.231933804597e-5}},
       {"2n2", {4.086699633, 1.352405e-4}},
       {"mu2", {3.463115091, 1.355937e-4}},
       {"nu2", {5.427136701, 1.382329e-4}},
+      {"eps2", {1.499093481448, 1.329544980199e-4}},
       {"l2", {0.553986502, 1.431581e-4}},
       {"t2", {0.050398470, 1.452450e-4}},
+      {"r2", {3.091194183207, 1.456432107182e-4}},
       {"j1", {2.137025284, 7.556036e-5}},
       {"m1", {2.436575000, 7.025945e-5}},
       {"oo1", {1.92904613, 7.824458e-5}},
@@ -361,18 +367,31 @@ const std::map<std::string, ConstituentParameters>& Parameters() {
       {"m4", {3.463115091, 2.810377e-4}},
       {"ms4", {1.731557546, 2.859630e-4}},
       {"mn4", {1.499093481, 2.783984e-4}},
+      {"n4", {5.818257178723, 2.757593993003e-4}},
       {"s1", {0.0, 7.272205e-5}},
-      // Shallow-water and long-period constituents are important at
-      // nonlinear ports such as Liverpool.  The complex coefficient carries
-      // the source phase, so a fixed zero phase is valid for these additions.
-      {"m3", {0.0, 2.107783e-4}},
-      {"m6", {0.0, 4.215566e-4}},
+      // Compound shallow-water constituents inherit both frequency and the
+      // equilibrium argument at the 1992 ATLAS epoch from their parents.  A
+      // harmonic coefficient contains the Greenwich phase lag; it does not
+      // replace this astronomical phase.
+      // M3's Doodson branch is 180 degrees beyond the principal 1.5*M2
+      // branch (confirmed against the XTide equilibrium-argument table).
+      {"m3", {5.738928972589793, 2.1077835e-4}},
+      {"m6", {5.194672638, 4.215567e-4}},
+      {"m8", {0.643044875527, 5.620756108103e-4}},
       {"s4", {0.0, 2.908882e-4}},
-      {"mk3", {0.0, 2.134401e-4}},
-      {"2mk3", {0.0, 2.081165e-4}},
-      {"2sm2", {0.0, 1.503693e-4}},
-      {"lda2", {0.0, 1.428193e-4}},
-      {"sa", {0.0, 1.991064e-7}}};
+      {"s3", {0.0, 2.181661564993e-4}},
+      {"mk3", {1.904561220, 2.1344007e-4}},
+      {"2mk3", {3.290111418, 2.0811663e-4}},
+      {"2sm2", {4.551627761, 1.503693e-4}},
+      {"ma2", {3.129350198599, 1.403197963172e-4}},
+      {"mb2", {0.333764892754, 1.407180090879e-4}},
+      {"mks2", {5.219157547011, 1.409171154733e-4}},
+      {"msf", {4.551627761503, 4.925201630292e-6}},
+      {"msq", {0.024484909982, 1.024861603131e-5}},
+      {"mtm", {3.720064065563, 7.962617453423e-6}},
+      {"lda2", {1.177571043685, 1.428049012805e-4}},
+      {"sa", {0.0, 1.991064e-7}},
+      {"ssa", {3.487600001335, 3.982127707309e-7}}};
   return values;
 }
 
@@ -384,7 +403,9 @@ std::pair<double, double> Nodal(const std::string& c, double n_deg,
   const double s2n = std::sin(2 * n), c2n = std::cos(2 * n);
   const double s3n = std::sin(3 * n);
   double a = 0.0, b = 1.0;
-  if (c == "p1" || c == "s1" || c == "s2") return {1.0, 0.0};
+  if (c == "p1" || c == "r2" || c == "s1" || c == "s2" || c == "s3" ||
+      c == "ssa")
+    return {1.0, 0.0};
   if (c == "mm") {
     b = 1.0 - 0.130 * cn;
   } else if (c == "mf") {
@@ -395,7 +416,9 @@ std::pair<double, double> Nodal(const std::string& c, double n_deg,
     b = 1.0 + 0.189 * cn - 0.0058 * c2n;
     return {std::hypot(a, b),
             (10.8 * sn - 1.3 * s2n + 0.2 * s3n) * kPi / 180.0};
-  } else if (c == "q1" || c == "2q1" || c == "rho1") {
+  } else if (c == "2q1") {
+    return Nodal("o1", n_deg, p_deg);
+  } else if (c == "q1" || c == "rho1") {
     return {std::hypot(1.0 + 0.188 * cn, 0.188 * sn),
             std::atan(0.189 * sn / (1.0 + 0.189 * cn))};
   } else if (c == "k1") {
@@ -404,7 +427,8 @@ std::pair<double, double> Nodal(const std::string& c, double n_deg,
   } else if (c == "k2") {
     a = -0.3108 * sn - 0.0324 * s2n;
     b = 1.0 + 0.2852 * cn + 0.0324 * c2n;
-  } else if (c == "m2" || c == "n2" || c == "2n2" || c == "ms4") {
+  } else if (c == "m2" || c == "n2" || c == "2n2" || c == "eps2" ||
+             c == "ms4") {
     a = -0.03731 * sn + 0.00052 * s2n;
     b = 1.0 - 0.03731 * cn + 0.00052 * c2n;
   } else if (c == "m4" || c == "mn4") {
@@ -416,6 +440,12 @@ std::pair<double, double> Nodal(const std::string& c, double n_deg,
   } else if (c == "m6") {
     const auto [f, u] = Nodal("m2", n_deg, p_deg);
     return {f * f * f, 3 * u};
+  } else if (c == "m8") {
+    const auto [f, u] = Nodal("m2", n_deg, p_deg);
+    return {f * f * f * f, 4 * u};
+  } else if (c == "n4") {
+    const auto [f, u] = Nodal("n2", n_deg, p_deg);
+    return {f * f, 2 * u};
   } else if (c == "mk3") {
     const auto [fm, um] = Nodal("m2", n_deg, p_deg);
     const auto [fk, uk] = Nodal("k1", n_deg, p_deg);
@@ -427,8 +457,22 @@ std::pair<double, double> Nodal(const std::string& c, double n_deg,
   } else if (c == "2sm2") {
     const auto [f, u] = Nodal("m2", n_deg, p_deg);
     return {f, -u};
+  } else if (c == "mks2") {
+    const auto [fm, um] = Nodal("m2", n_deg, p_deg);
+    const auto [fk, uk] = Nodal("k2", n_deg, p_deg);
+    return {fm * fk, um + uk};
+  } else if (c == "msf" || c == "msq") {
+    const auto [f, u] = Nodal("m2", n_deg, p_deg);
+    return {f, -u};
+  } else if (c == "mtm") {
+    return Nodal("mm", n_deg, p_deg);
+  } else if (c == "ma2" || c == "mb2") {
+    // IHO recommends the M2 correction for these annual sidebands.
+    return Nodal("m2", n_deg, p_deg);
   } else if (c == "lda2") {
-    return Nodal("l2", n_deg, p_deg);
+    // IHO's lambda2 entry uses the M2 nodal correction (class "m"), not
+    // L2's constituent-specific p/N correction.
+    return Nodal("m2", n_deg, p_deg);
   } else if (c == "l2") {
     a = -0.25 * std::sin(2 * p) - 0.11 * std::sin(2 * p - n) - 0.04 * sn;
     b = 1.0 - 0.25 * std::cos(2 * p) - 0.11 * std::cos(2 * p - n) - 0.04 * cn;

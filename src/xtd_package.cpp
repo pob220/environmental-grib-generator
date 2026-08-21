@@ -397,16 +397,17 @@ struct ResidualTile {
   std::vector<unsigned char> mask;
   std::vector<float> scales;
   std::vector<std::int16_t> values;
+  std::vector<unsigned char> trailing;
   std::uint64_t ByteSize() const {
     return sizeof(*this) + mask.capacity() + scales.capacity() * 4 +
-           values.capacity() * 2;
+           values.capacity() * 2 + trailing.capacity();
   }
 };
 
 std::shared_ptr<ResidualTile> ParseFieldTile(
     const Bytes& raw, const TileIndex& e, std::uint32_t expected_fields,
     const std::array<unsigned char, 4>& expected_magic,
-    const std::string& description) {
+    const std::string& description, std::uint32_t trailing_bytes_per_cell = 0) {
   if (raw.size() < 32 ||
       !std::equal(raw.begin(), raw.begin() + 4, expected_magic.begin()))
     Invalid(description + " tile magic is invalid");
@@ -422,12 +423,15 @@ std::shared_ptr<ResidualTile> ParseFieldTile(
              declared = ReadLe<std::uint32_t>(&raw[28]);
   const auto expected_cells = static_cast<std::uint32_t>(e.width) * e.height;
   const auto expected_mask = (expected_cells + 7) / 8;
-  const auto expected = Add(Add(32, expected_mask, description + " mask"),
-                            Add(Mul(fields, 4, description + " scales"),
-                                Mul(Mul(fields, cells, description + " values"),
-                                    2, description + " values"),
-                                description + " fields"),
-                            description + " tile");
+  const auto expected =
+      Add(Add(32, expected_mask, description + " mask"),
+          Add(Add(Mul(fields, 4, description + " scales"),
+                  Mul(Mul(fields, cells, description + " values"), 2,
+                      description + " values"),
+                  description + " fields"),
+              Mul(trailing_bytes_per_cell, cells, description + " trailing"),
+              description + " payload"),
+          description + " tile");
   if (version != 1 || width != e.width || height != e.height ||
       fields != expected_fields || cells != expected_cells ||
       mask_bytes != expected_mask || encoding > 1 || declared != raw.size() ||
@@ -470,6 +474,7 @@ std::shared_ptr<ResidualTile> ParseFieldTile(
           tile->values[q] = std::bit_cast<std::int16_t>(decoded);
         }
     }
+  tile->trailing.assign(raw.begin() + pos, raw.end());
   return tile;
 }
 
@@ -552,13 +557,15 @@ public:
                  const SecureKey& package, XtdReaderOptions options,
                  std::uint32_t explicit_fields = 0,
                  std::array<unsigned char, 4> tile_magic = {'X', 'C', 'R', '1'},
-                 std::string description = "residual")
+                 std::string description = "residual",
+                 std::uint32_t trailing_bytes_per_cell = 0)
       : source_(std::move(source)),
         outer_(outer),
         component_(component),
         key_(DeriveComponentKey(package, component)),
         tile_magic_(tile_magic),
         description_(std::move(description)),
+        trailing_bytes_per_cell_(trailing_bytes_per_cell),
         capacity_(options.tile_cache_capacity),
         max_bytes_(options.tile_cache_max_bytes) {
     metadata_raw_ =
@@ -596,6 +603,8 @@ public:
   struct SampledFields {
     std::vector<std::vector<double>> fields;
     std::vector<std::uint8_t> valid;
+    std::vector<std::uint8_t> support_class;
+    std::vector<std::uint16_t> observation_count;
   };
 
   SampledFields Sample(const RegularGrid& output) {
@@ -604,7 +613,11 @@ public:
         std::vector<std::vector<double>>(
             fields_, std::vector<double>(
                          points, std::numeric_limits<double>::quiet_NaN())),
-        std::vector<std::uint8_t>(points, 0)};
+        std::vector<std::uint8_t>(points, 0),
+        trailing_bytes_per_cell_ == 3 ? std::vector<std::uint8_t>(points, 0)
+                                      : std::vector<std::uint8_t>{},
+        trailing_bytes_per_cell_ == 3 ? std::vector<std::uint16_t>(points, 0)
+                                      : std::vector<std::uint16_t>{}};
     for (std::size_t y = 0; y < output.ny(); ++y)
       for (std::size_t x = 0; x < output.nx(); ++x) {
         const auto p = y * output.nx() + x;
@@ -646,6 +659,18 @@ public:
                      tiles[corner]->scales[field];
           }
           result.fields[field][p] = value;
+        }
+        if (trailing_bytes_per_cell_ == 3) {
+          const auto nearest = static_cast<std::size_t>(
+              std::distance(weights.begin(),
+                            std::max_element(weights.begin(), weights.end())));
+          const auto cells = static_cast<std::size_t>(tiles[nearest]->width) *
+                             tiles[nearest]->height;
+          const auto local = locals[nearest];
+          const auto& trailing = tiles[nearest]->trailing;
+          result.support_class[p] = trailing.at(local);
+          result.observation_count[p] =
+              ReadLe<std::uint16_t>(&trailing.at(cells + local * 2));
         }
       }
     return result;
@@ -791,7 +816,8 @@ private:
       stats_.encrypted_bytes += encrypted.size();
       stats_.compressed_bytes += compressed.size();
       stats_.decompressed_bytes += plain.size();
-      tile = ParseFieldTile(plain, e, fields_, tile_magic_, description_);
+      tile = ParseFieldTile(plain, e, fields_, tile_magic_, description_,
+                            trailing_bytes_per_cell_);
     }
     ++stats_.tiles_loaded;
     stats_.load_ms +=
@@ -820,6 +846,7 @@ private:
   std::uint32_t fields_{};
   std::array<unsigned char, 4> tile_magic_{};
   std::string description_;
+  std::uint32_t trailing_bytes_per_cell_{};
   std::vector<TileIndex> index_;
   Bytes metadata_raw_, index_raw_;
   std::size_t capacity_{};
@@ -827,6 +854,45 @@ private:
   XtdStatistics stats_;
   std::list<std::uint32_t> lru_;
   std::unordered_map<std::uint32_t, Item> cache_;
+};
+
+class HeightQualityReader {
+public:
+  HeightQualityReader(std::shared_ptr<RandomAccessSource> source,
+                      const OuterHeader& outer, const Component& component,
+                      const SecureKey& package, XtdReaderOptions options)
+      : fields_(std::move(source), outer, component, package, options, 3,
+                {'X', 'H', 'Q', '1'}, "water-level quality", 3) {
+    const auto& metadata = fields_.metadata();
+    const auto& names = metadata["continuous_fields"];
+    if (!names.isArray() || names.size() != 3 ||
+        names[0].asString() != "harmonic_sigma_m" ||
+        names[1].asString() != "datum_sigma_m" ||
+        names[2].asString() != "nearest_observation_distance_km")
+      Invalid("water-level quality fields are invalid");
+  }
+
+  TideHeightQualityGrid Sample(const RegularGrid& output) {
+    const auto sampled = fields_.Sample(output);
+    TideHeightQualityGrid result;
+    result.grid = output;
+    result.harmonic_sigma_m = sampled.fields[0];
+    result.datum_sigma_m = sampled.fields[1];
+    result.nearest_observation_distance_km = sampled.fields[2];
+    result.support_class = sampled.support_class;
+    result.observation_count = sampled.observation_count;
+    result.mask.resize(output.size(), 1);
+    for (std::size_t point = 0; point < output.size(); ++point)
+      if (sampled.valid[point]) result.mask[point] = 0;
+    result.Validate();
+    return result;
+  }
+  XtdStatistics Verify() { return fields_.Verify(); }
+  XtdStatistics statistics() const { return fields_.stats(); }
+  void Clear() { fields_.Clear(); }
+
+private:
+  ResidualReader fields_;
 };
 
 class HeightReader {
@@ -1070,8 +1136,7 @@ void ValidateHeightQualityTile(const Bytes& raw, const TileIndex& entry) {
   }
   cursor += static_cast<std::size_t>(kContinuousFields) * cells * 2;
   for (std::uint32_t cell = 0; cell < cells; ++cell)
-    if (raw[cursor + cell] > 3)
-      Invalid("water-level support class is invalid");
+    if (raw[cursor + cell] > 4) Invalid("water-level support class is invalid");
 }
 
 class TiledComponentVerifier {
@@ -1293,8 +1358,8 @@ public:
       status_.height_datum_name = height_->datum_name();
     }
     if (height_quality) {
-      height_quality_ = std::make_unique<TiledComponentVerifier>(
-          source_, outer_, *height_quality, package_key_);
+      height_quality_ = std::make_unique<HeightQualityReader>(
+          source_, outer_, *height_quality, package_key_, options_);
       status_.height_quality_available = true;
     }
   }
@@ -1381,6 +1446,11 @@ public:
           "XTD package has no water-level harmonic component");
     return height_->Sample(grid);
   }
+  TideHeightQualityGrid SampleHeightQuality(const RegularGrid& grid) {
+    if (!height_quality_)
+      throw ValidationError("XTD package has no water-level quality component");
+    return height_quality_->Sample(grid);
+  }
   Json::Value Verify() {
     Json::Value v(Json::objectValue);
     v["format_version"] = status_.format_version;
@@ -1425,8 +1495,7 @@ public:
     if (residual_) s.residual = residual_->stats();
     if (uncertainty_) s.uncertainty = uncertainty_->statistics();
     if (height_) s.height = height_->statistics();
-    if (height_quality_)
-      s.height_quality = height_quality_->statistics();
+    if (height_quality_) s.height_quality = height_quality_->statistics();
     s.outer_bytes_read = source_->bytes_read();
     return s;
   }
@@ -1434,6 +1503,7 @@ public:
     if (tide_) tide_->ClearTileCache();
     if (residual_) residual_->Clear();
     if (height_) height_->Clear();
+    if (height_quality_) height_quality_->Clear();
   }
   XtdPackageStatus status_;
   std::shared_ptr<RandomAccessSource> source_;
@@ -1446,7 +1516,7 @@ public:
   std::unique_ptr<ResidualReader> residual_;
   std::unique_ptr<TiledComponentVerifier> uncertainty_;
   std::unique_ptr<HeightReader> height_;
-  std::unique_ptr<TiledComponentVerifier> height_quality_;
+  std::unique_ptr<HeightQualityReader> height_quality_;
 };
 
 XtdPackageReader::XtdPackageReader(const std::filesystem::path& p,
@@ -1477,6 +1547,10 @@ TideHeightHarmonics XtdPackageReader::SampleHeightHarmonics(
     const RegularGrid& grid) {
   return impl_->SampleHeightHarmonics(grid);
 }
+TideHeightQualityGrid XtdPackageReader::SampleHeightQuality(
+    const RegularGrid& grid) {
+  return impl_->SampleHeightQuality(grid);
+}
 void TideHeightGrid::Validate() const {
   if (height_m.size() != grid.size())
     throw ValidationError("height array must match the grid shape");
@@ -1497,6 +1571,25 @@ void TideHeightHarmonics::Validate() const {
   if (datum_id.empty() || datum_name.empty())
     throw ValidationError(
         "height harmonics must identify their vertical datum");
+}
+void TideHeightQualityGrid::Validate() const {
+  const auto points = grid.size();
+  if (harmonic_sigma_m.size() != points || datum_sigma_m.size() != points ||
+      nearest_observation_distance_km.size() != points ||
+      support_class.size() != points || observation_count.size() != points)
+    throw ValidationError("height quality arrays must match the grid shape");
+  if (!mask.empty() && mask.size() != points)
+    throw ValidationError("height quality mask must match the grid shape");
+  for (std::size_t point = 0; point < points; ++point) {
+    if (!mask.empty() && mask[point]) continue;
+    if (!std::isfinite(harmonic_sigma_m[point]) ||
+        harmonic_sigma_m[point] < 0.0 || !std::isfinite(datum_sigma_m[point]) ||
+        datum_sigma_m[point] < 0.0 ||
+        !std::isfinite(nearest_observation_distance_km[point]) ||
+        nearest_observation_distance_km[point] < 0.0 ||
+        support_class[point] > 4)
+      throw ValidationError("height quality value is invalid");
+  }
 }
 Json::Value XtdPackageReader::VerifyAllComponents() { return impl_->Verify(); }
 Json::Value InspectXtdPackage(const std::filesystem::path& p) {
