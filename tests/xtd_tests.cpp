@@ -507,6 +507,7 @@ void TestWaterLevelHarmonicsAndDatum() {
   test::XtdV2FixtureOptions options;
   options.include_height = true;
   options.include_height_quality = true;
+  options.include_vertical_datum = true;
   options.height_support_class = [](std::uint32_t, std::uint32_t) {
     return std::uint8_t{4};
   };
@@ -553,14 +554,29 @@ void TestWaterLevelHarmonicsAndDatum() {
         "water-level quality continuous fields were not sampled");
   Check(quality.support_class[0] == 4 && quality.observation_count[0] == 0,
         "water-level quality support fields were not sampled");
+  const auto datum = reader.SampleVerticalDatum(point);
+  Check(!datum.mask[0] && std::abs(datum.offset_m[0] - 2.5) < 0.001 &&
+            std::abs(datum.uncertainty_m[0] - 0.12) < 0.001 &&
+            std::abs(datum.nearest_station_distance_km[0] - 8.0) < 0.051,
+        "vertical-datum continuous fields were not sampled");
+  Check(datum.realization_class[0] == 1 && datum.support_class[0] == 1 &&
+            datum.station_count[0] == 1 &&
+            datum.source_datum_id == "model-mean-sea-level" &&
+            datum.target_datum_id == "chart-datum",
+        "vertical-datum identity and support fields were not sampled");
   const auto inspection = eg::InspectXtdPackage(path);
   Check(inspection["capabilities"]["water_level_height"].asBool(),
         "inspection advertises water-level capability");
+  Check(inspection["capabilities"]["vertical_datum_transform"].asBool(),
+        "inspection advertises the vertical-datum transform");
   const auto verification = reader.VerifyAllComponents();
   Check(verification["water_level_harmonics"]["tiles_loaded"].asUInt64() > 0,
         "verification authenticates water-level tiles");
   Check(verification["water_level_quality"]["tiles_loaded"].asUInt64() > 0,
         "quality verifier accepts independent-model fallback support");
+  Check(verification["vertical_datum_transform"]["tiles_loaded"].asUInt64() >
+            0,
+        "verification authenticates vertical-datum tiles");
   RemoveTestFile(path);
 }
 

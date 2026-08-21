@@ -493,22 +493,27 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
   const bool uncertainty = component_type == 3;
   const bool water_level = component_type == 4;
   const bool height_quality = component_type == 5;
+  const bool vertical_datum = component_type == 6;
   const std::uint32_t cells = static_cast<std::uint32_t>(width) * height;
   const std::uint32_t mask_bytes = (cells + 7) / 8;
   const std::uint32_t fields =
       uncertainty                                                         ? 4
+      : vertical_datum                                                    ? 3
       : height_quality                                                    ? 3
       : water_level ? options.height_constituents.size() * 2
       : options.representation == XtdV2ResidualRepresentation::kHarmonic2 ? 10
                                                                           : 24;
   const std::uint32_t quality_bytes =
-      uncertainty ? cells * 7 : height_quality ? cells * 3 : 0;
+      uncertainty ? cells * 7
+                  : height_quality ? cells * 3
+                                   : vertical_datum ? cells * 4 : 0;
   const std::uint32_t total =
       32 + mask_bytes + fields * 4 + fields * cells * 2 + quality_bytes;
   Bytes result(total);
   std::copy_n(uncertainty   ? "XCU1"
               : water_level ? "XCH1"
               : height_quality ? "XHQ1"
+              : vertical_datum ? "XVD1"
                                : "XCR1",
               4, result.begin());
   PutLe(&result, 4, static_cast<std::uint16_t>(1));
@@ -516,6 +521,7 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
         static_cast<std::uint16_t>(
             uncertainty ? 0
             : height_quality ? 6
+            : vertical_datum ? 7
             : water_level ? 5
             : options.representation == XtdV2ResidualRepresentation::kHarmonic2
                 ? 2
@@ -534,7 +540,13 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
       const auto cell = y * width + x;
       const auto global_x = tx * options.tile_width + x;
       const auto global_y = ty * options.tile_height + y;
-      if (!options.valid || options.valid(global_x, global_y)) {
+      const bool valid = vertical_datum
+                             ? (!options.vertical_datum_valid ||
+                                options.vertical_datum_valid(global_x,
+                                                             global_y))
+                             : (!options.valid ||
+                                options.valid(global_x, global_y));
+      if (valid) {
         result[cursor + cell / 8] |=
             static_cast<unsigned char>(1U << (cell % 8));
       }
@@ -542,7 +554,7 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
   }
   cursor += mask_bytes;
   for (std::uint32_t field = 0; field < fields; ++field) {
-    const float scale = height_quality
+    const float scale = (height_quality || vertical_datum)
                             ? (field == 2 ? 0.1F : 0.001F)
                             : options.quantization_scale;
     PutF32(&result, cursor, scale);
@@ -556,6 +568,11 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
         double value;
         if (uncertainty) {
           constexpr std::array<double, 4> values{0.12, 0.16, 0.004, 0.03};
+          value = values[field];
+        } else if (vertical_datum && options.vertical_datum_value) {
+          value = options.vertical_datum_value(field, global_x, global_y);
+        } else if (vertical_datum) {
+          constexpr std::array<double, 3> values{2.5, 0.12, 8.0};
           value = values[field];
         } else if (height_quality && options.height_quality_value) {
           value = options.height_quality_value(field, global_x, global_y);
@@ -579,7 +596,8 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
           value = field < 12 ? 0.01 * (field + 1) : -0.01 * (field - 11);
         }
         const double scale =
-            height_quality ? (field == 2 ? 0.1 : 0.001)
+            (height_quality || vertical_datum)
+                ? (field == 2 ? 0.1 : 0.001)
                            : static_cast<double>(options.quantization_scale);
         const long quantized = std::lround(value / scale);
         if (quantized < std::numeric_limits<std::int16_t>::min() ||
@@ -618,6 +636,34 @@ Bytes MakeV2TilePlaintext(const XtdV2FixtureOptions& options, std::uint32_t tx,
                                ? options.height_observation_count(global_x,
                                                                   global_y)
                                : std::uint16_t{0};
+        PutLe(&result, cursor, count);
+        cursor += 2;
+      }
+  } else if (vertical_datum) {
+    for (std::uint32_t y = 0; y < height; ++y)
+      for (std::uint32_t x = 0; x < width; ++x) {
+        const auto gx = tx * options.tile_width + x;
+        const auto gy = ty * options.tile_height + y;
+        result[cursor++] = options.vertical_datum_realization_class
+                               ? options.vertical_datum_realization_class(gx,
+                                                                          gy)
+                               : std::uint8_t{1};
+      }
+    for (std::uint32_t y = 0; y < height; ++y)
+      for (std::uint32_t x = 0; x < width; ++x) {
+        const auto gx = tx * options.tile_width + x;
+        const auto gy = ty * options.tile_height + y;
+        result[cursor++] = options.vertical_datum_support_class
+                               ? options.vertical_datum_support_class(gx, gy)
+                               : std::uint8_t{1};
+      }
+    for (std::uint32_t y = 0; y < height; ++y)
+      for (std::uint32_t x = 0; x < width; ++x) {
+        const auto gx = tx * options.tile_width + x;
+        const auto gy = ty * options.tile_height + y;
+        const auto count = options.vertical_datum_station_count
+                               ? options.vertical_datum_station_count(gx, gy)
+                               : std::uint16_t{1};
         PutLe(&result, cursor, count);
         cursor += 2;
       }
@@ -667,10 +713,12 @@ V2Component MakeV2TiledComponent(
       type == 2 ? "climatological_residual"
       : type == 3 ? "climatological_uncertainty"
       : type == 4 ? "water_level_harmonics"
-                  : "water_level_quality";
+      : type == 5 ? "water_level_quality"
+                  : "vertical_datum_transform";
   metadata["representation"] = type == 3             ? "uncertainty_v1"
                                : type == 4             ? "harmonics_v1"
                                : type == 5             ? "height_quality_v1"
+                               : type == 6             ? "vertical_datum_v1"
                                : representation == 2 ? "harmonic2"
                                                      : "monthly12";
   if (type == 4) {
@@ -693,6 +741,36 @@ V2Component MakeV2TiledComponent(
     metadata["support_classes"]["4"] = "independent-model-fallback";
     for (const auto& name : options.height_quality_metadata.getMemberNames())
       metadata[name] = options.height_quality_metadata[name];
+  } else if (type == 6) {
+    metadata["continuous_fields"].append("offset_m");
+    metadata["continuous_fields"].append("uncertainty_m");
+    metadata["continuous_fields"].append(
+        "nearest_station_distance_km");
+    metadata["source_vertical_datum"]["id"] =
+        options.vertical_datum_source_id;
+    metadata["source_vertical_datum"]["name"] =
+        options.vertical_datum_source_name;
+    metadata["target_vertical_datum"]["id"] =
+        options.vertical_datum_target_id;
+    metadata["target_vertical_datum"]["name"] =
+        options.vertical_datum_target_name;
+    metadata["epoch"] = options.vertical_datum_epoch;
+    metadata["realization_classes"]["1"] = "LAT";
+    metadata["realization_classes"]["2"] = "MLLW";
+    metadata["realization_classes"]["3"] = "LLWLT";
+    metadata["realization_classes"]["4"] = "NLLW";
+    metadata["realization_classes"]["5"] = "MLWS";
+    metadata["realization_classes"]["6"] = "MSL";
+    metadata["realization_classes"]["7"] = "TLT-or-LLW";
+    metadata["realization_classes"]["8"] =
+        "other-authority-chart-datum";
+    metadata["support_classes"]["1"] = "authority-grid";
+    metadata["support_classes"]["2"] = "station-constrained";
+    metadata["support_classes"]["3"] = "estuary-station-constrained";
+    metadata["support_classes"]["4"] = "model-derived";
+    for (const auto& name :
+         options.vertical_datum_metadata.getMemberNames())
+      metadata[name] = options.vertical_datum_metadata[name];
   } else {
     metadata["velocity_units"] = "m/s";
   }
@@ -799,6 +877,9 @@ void WriteXtdV2Fixture(const std::filesystem::path& path,
     throw std::runtime_error("XTD v2 fixture needs a tide or height component");
   if (options.include_height_quality && !options.include_height)
     throw std::runtime_error("height quality requires a water-level component");
+  if (options.include_vertical_datum && !options.include_height)
+    throw std::runtime_error(
+        "vertical datum requires a water-level component");
   Bytes nested;
   std::array<unsigned char, 32> tide_hash{};
   if (options.include_tide) {
@@ -850,7 +931,8 @@ void WriteXtdV2Fixture(const std::filesystem::path& path,
       static_cast<std::uint32_t>(options.include_residual) +
       static_cast<std::uint32_t>(options.include_uncertainty) +
       static_cast<std::uint32_t>(options.include_height) +
-      static_cast<std::uint32_t>(options.include_height_quality);
+      static_cast<std::uint32_t>(options.include_height_quality) +
+      static_cast<std::uint32_t>(options.include_vertical_datum);
   const std::uint64_t directory_offset =
       kHeaderSize + outer_metadata_bytes.size();
   const std::uint64_t payload_offset =
@@ -884,6 +966,12 @@ void WriteXtdV2Fixture(const std::filesystem::path& path,
   if (options.include_height_quality) {
     tiled_components.push_back(MakeV2TiledComponent(
         options, 5, 6, package_id, package_key, next_offset));
+    next_offset = tiled_components.back().payload_offset +
+                  tiled_components.back().payload.size();
+  }
+  if (options.include_vertical_datum) {
+    tiled_components.push_back(MakeV2TiledComponent(
+        options, 6, 7, package_id, package_key, next_offset));
     next_offset = tiled_components.back().payload_offset +
                   tiled_components.back().payload.size();
   }

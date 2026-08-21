@@ -77,6 +77,23 @@ struct XtdV2FixtureOptions {
       height_support_class;
   std::function<std::uint16_t(std::uint32_t x, std::uint32_t y)>
       height_observation_count;
+  bool include_vertical_datum{false};
+  std::string vertical_datum_source_id{"model-mean-sea-level"};
+  std::string vertical_datum_source_name{"Model mean sea level"};
+  std::string vertical_datum_target_id{"chart-datum"};
+  std::string vertical_datum_target_name{"Local Chart Datum"};
+  std::string vertical_datum_epoch{"2026"};
+  Json::Value vertical_datum_metadata{Json::objectValue};
+  std::function<double(std::size_t field, std::uint32_t x, std::uint32_t y)>
+      vertical_datum_value;
+  std::function<bool(std::uint32_t x, std::uint32_t y)>
+      vertical_datum_valid;
+  std::function<std::uint8_t(std::uint32_t x, std::uint32_t y)>
+      vertical_datum_realization_class;
+  std::function<std::uint8_t(std::uint32_t x, std::uint32_t y)>
+      vertical_datum_support_class;
+  std::function<std::uint16_t(std::uint32_t x, std::uint32_t y)>
+      vertical_datum_station_count;
 };
 
 void WriteXtdFixture(const std::filesystem::path& path,

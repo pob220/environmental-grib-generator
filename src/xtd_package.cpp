@@ -42,12 +42,14 @@ constexpr std::uint32_t kTypeResidual = 2;
 constexpr std::uint32_t kTypeUncertainty = 3;
 constexpr std::uint32_t kTypeWaterLevel = 4;
 constexpr std::uint32_t kTypeWaterLevelQuality = 5;
+constexpr std::uint32_t kTypeVerticalDatum = 6;
 constexpr std::uint32_t kRepEmbeddedV1 = 1;
 constexpr std::uint32_t kRepHarmonic2 = 2;
 constexpr std::uint32_t kRepMonthly12 = 3;
 constexpr std::uint32_t kRepUncertainty1 = 4;
 constexpr std::uint32_t kRepWaterLevelHarmonics1 = 5;
 constexpr std::uint32_t kRepWaterLevelQuality1 = 6;
+constexpr std::uint32_t kRepVerticalDatum1 = 7;
 constexpr std::uint32_t kFlagRequired = 1;
 constexpr std::uint32_t kFlagNested = 8;
 constexpr std::uint32_t kEmptyTile = 1;
@@ -603,6 +605,7 @@ public:
   struct SampledFields {
     std::vector<std::vector<double>> fields;
     std::vector<std::uint8_t> valid;
+    std::vector<std::uint8_t> realization_class;
     std::vector<std::uint8_t> support_class;
     std::vector<std::uint16_t> observation_count;
   };
@@ -614,9 +617,11 @@ public:
             fields_, std::vector<double>(
                          points, std::numeric_limits<double>::quiet_NaN())),
         std::vector<std::uint8_t>(points, 0),
-        trailing_bytes_per_cell_ == 3 ? std::vector<std::uint8_t>(points, 0)
+        trailing_bytes_per_cell_ == 4 ? std::vector<std::uint8_t>(points, 0)
                                       : std::vector<std::uint8_t>{},
-        trailing_bytes_per_cell_ == 3 ? std::vector<std::uint16_t>(points, 0)
+        trailing_bytes_per_cell_ >= 3 ? std::vector<std::uint8_t>(points, 0)
+                                      : std::vector<std::uint8_t>{},
+        trailing_bytes_per_cell_ >= 3 ? std::vector<std::uint16_t>(points, 0)
                                       : std::vector<std::uint16_t>{}};
     for (std::size_t y = 0; y < output.ny(); ++y)
       for (std::size_t x = 0; x < output.nx(); ++x) {
@@ -660,7 +665,7 @@ public:
           }
           result.fields[field][p] = value;
         }
-        if (trailing_bytes_per_cell_ == 3) {
+        if (trailing_bytes_per_cell_ >= 3) {
           const auto nearest = static_cast<std::size_t>(
               std::distance(weights.begin(),
                             std::max_element(weights.begin(), weights.end())));
@@ -668,9 +673,14 @@ public:
                              tiles[nearest]->height;
           const auto local = locals[nearest];
           const auto& trailing = tiles[nearest]->trailing;
-          result.support_class[p] = trailing.at(local);
+          const std::size_t support_base =
+              trailing_bytes_per_cell_ == 4 ? cells : 0;
+          if (trailing_bytes_per_cell_ == 4)
+            result.realization_class[p] = trailing.at(local);
+          result.support_class[p] = trailing.at(support_base + local);
           result.observation_count[p] =
-              ReadLe<std::uint16_t>(&trailing.at(cells + local * 2));
+              ReadLe<std::uint16_t>(
+                  &trailing.at(support_base + cells + local * 2));
         }
       }
     return result;
@@ -893,6 +903,67 @@ public:
 
 private:
   ResidualReader fields_;
+};
+
+class VerticalDatumReader {
+public:
+  VerticalDatumReader(std::shared_ptr<RandomAccessSource> source,
+                      const OuterHeader& outer, const Component& component,
+                      const SecureKey& package, XtdReaderOptions options)
+      : fields_(std::move(source), outer, component, package, options, 3,
+                {'X', 'V', 'D', '1'}, "vertical-datum transform", 4) {
+    const auto& metadata = fields_.metadata();
+    const auto& names = metadata["continuous_fields"];
+    if (!names.isArray() || names.size() != 3 ||
+        names[0].asString() != "offset_m" ||
+        names[1].asString() != "uncertainty_m" ||
+        names[2].asString() != "nearest_station_distance_km")
+      Invalid("vertical-datum fields are invalid");
+    const auto& source_datum = metadata["source_vertical_datum"];
+    const auto& target_datum = metadata["target_vertical_datum"];
+    source_id_ = source_datum.get("id", "").asString();
+    source_name_ = source_datum.get("name", "").asString();
+    target_id_ = target_datum.get("id", "").asString();
+    target_name_ = target_datum.get("name", "").asString();
+    epoch_ = metadata.get("epoch", "").asString();
+    if (!source_datum.isObject() || !target_datum.isObject() ||
+        source_id_.empty() || source_name_.empty() || target_id_.empty() ||
+        target_name_.empty() || epoch_.empty())
+      Invalid("vertical-datum reference metadata is missing");
+  }
+
+  TideVerticalDatumGrid Sample(const RegularGrid& output) {
+    const auto sampled = fields_.Sample(output);
+    TideVerticalDatumGrid result;
+    result.grid = output;
+    result.offset_m = sampled.fields[0];
+    result.uncertainty_m = sampled.fields[1];
+    result.nearest_station_distance_km = sampled.fields[2];
+    result.realization_class = sampled.realization_class;
+    result.support_class = sampled.support_class;
+    result.station_count = sampled.observation_count;
+    result.mask.resize(output.size(), 1);
+    for (std::size_t point = 0; point < output.size(); ++point)
+      if (sampled.valid[point]) result.mask[point] = 0;
+    result.source_datum_id = source_id_;
+    result.source_datum_name = source_name_;
+    result.target_datum_id = target_id_;
+    result.target_datum_name = target_name_;
+    result.epoch = epoch_;
+    result.Validate();
+    return result;
+  }
+  XtdStatistics Verify() { return fields_.Verify(); }
+  XtdStatistics statistics() const { return fields_.stats(); }
+  void Clear() { fields_.Clear(); }
+
+private:
+  ResidualReader fields_;
+  std::string source_id_;
+  std::string source_name_;
+  std::string target_id_;
+  std::string target_name_;
+  std::string epoch_;
 };
 
 class HeightReader {
@@ -1299,6 +1370,7 @@ public:
     const Component* uncertainty = nullptr;
     const Component* height = nullptr;
     const Component* height_quality = nullptr;
+    const Component* vertical_datum = nullptr;
     for (const auto& c : components_) {
       if (c.type == kTypeTide) {
         if (c.representation != kRepEmbeddedV1)
@@ -1335,6 +1407,10 @@ public:
         if (c.representation != kRepWaterLevelQuality1)
           Invalid("unsupported water-level quality representation");
         height_quality = &c;
+      } else if (c.type == kTypeVerticalDatum) {
+        if (c.representation != kRepVerticalDatum1)
+          Invalid("unsupported vertical-datum representation");
+        vertical_datum = &c;
       } else if (c.flags & kFlagRequired)
         Invalid("unknown required component");
     }
@@ -1361,6 +1437,13 @@ public:
       height_quality_ = std::make_unique<HeightQualityReader>(
           source_, outer_, *height_quality, package_key_, options_);
       status_.height_quality_available = true;
+    }
+    if (vertical_datum) {
+      if (!height)
+        Invalid("vertical-datum transform requires water-level harmonics");
+      vertical_datum_ = std::make_unique<VerticalDatumReader>(
+          source_, outer_, *vertical_datum, package_key_, options_);
+      status_.vertical_datum_available = true;
     }
   }
   void UnwrapAndAuthenticate() {
@@ -1451,6 +1534,11 @@ public:
       throw ValidationError("XTD package has no water-level quality component");
     return height_quality_->Sample(grid);
   }
+  TideVerticalDatumGrid SampleVerticalDatum(const RegularGrid& grid) {
+    if (!vertical_datum_)
+      throw ValidationError("XTD package has no vertical-datum transform");
+    return vertical_datum_->Sample(grid);
+  }
   Json::Value Verify() {
     Json::Value v(Json::objectValue);
     v["format_version"] = status_.format_version;
@@ -1486,6 +1574,9 @@ public:
     if (height_quality_)
       v["water_level_quality"]["tiles_loaded"] =
           Json::UInt64(height_quality_->Verify().tiles_loaded);
+    if (vertical_datum_)
+      v["vertical_datum_transform"]["tiles_loaded"] =
+          Json::UInt64(vertical_datum_->Verify().tiles_loaded);
     v["valid"] = true;
     return v;
   }
@@ -1496,6 +1587,7 @@ public:
     if (uncertainty_) s.uncertainty = uncertainty_->statistics();
     if (height_) s.height = height_->statistics();
     if (height_quality_) s.height_quality = height_quality_->statistics();
+    if (vertical_datum_) s.vertical_datum = vertical_datum_->statistics();
     s.outer_bytes_read = source_->bytes_read();
     return s;
   }
@@ -1504,6 +1596,7 @@ public:
     if (residual_) residual_->Clear();
     if (height_) height_->Clear();
     if (height_quality_) height_quality_->Clear();
+    if (vertical_datum_) vertical_datum_->Clear();
   }
   XtdPackageStatus status_;
   std::shared_ptr<RandomAccessSource> source_;
@@ -1517,6 +1610,7 @@ public:
   std::unique_ptr<TiledComponentVerifier> uncertainty_;
   std::unique_ptr<HeightReader> height_;
   std::unique_ptr<HeightQualityReader> height_quality_;
+  std::unique_ptr<VerticalDatumReader> vertical_datum_;
 };
 
 XtdPackageReader::XtdPackageReader(const std::filesystem::path& p,
@@ -1550,6 +1644,10 @@ TideHeightHarmonics XtdPackageReader::SampleHeightHarmonics(
 TideHeightQualityGrid XtdPackageReader::SampleHeightQuality(
     const RegularGrid& grid) {
   return impl_->SampleHeightQuality(grid);
+}
+TideVerticalDatumGrid XtdPackageReader::SampleVerticalDatum(
+    const RegularGrid& grid) {
+  return impl_->SampleVerticalDatum(grid);
 }
 void TideHeightGrid::Validate() const {
   if (height_m.size() != grid.size())
@@ -1591,6 +1689,31 @@ void TideHeightQualityGrid::Validate() const {
       throw ValidationError("height quality value is invalid");
   }
 }
+void TideVerticalDatumGrid::Validate() const {
+  const auto points = grid.size();
+  if (offset_m.size() != points || uncertainty_m.size() != points ||
+      nearest_station_distance_km.size() != points ||
+      realization_class.size() != points || support_class.size() != points ||
+      station_count.size() != points)
+    throw ValidationError("vertical-datum arrays must match the grid shape");
+  if (!mask.empty() && mask.size() != points)
+    throw ValidationError("vertical-datum mask must match the grid shape");
+  if (source_datum_id.empty() || source_datum_name.empty() ||
+      target_datum_id.empty() || target_datum_name.empty() || epoch.empty())
+    throw ValidationError("vertical-datum references are incomplete");
+  for (std::size_t point = 0; point < points; ++point) {
+    if (!mask.empty() && mask[point]) continue;
+    if (!std::isfinite(offset_m[point]) || offset_m[point] < -20.0 ||
+        offset_m[point] > 20.0 || !std::isfinite(uncertainty_m[point]) ||
+        uncertainty_m[point] < 0.0 || uncertainty_m[point] > 10.0 ||
+        !std::isfinite(nearest_station_distance_km[point]) ||
+        nearest_station_distance_km[point] < 0.0 ||
+        realization_class[point] == 0 || realization_class[point] > 8 ||
+        support_class[point] == 0 || support_class[point] > 4 ||
+        station_count[point] == 0)
+      throw ValidationError("vertical-datum value is invalid");
+  }
+}
 Json::Value XtdPackageReader::VerifyAllComponents() { return impl_->Verify(); }
 Json::Value InspectXtdPackage(const std::filesystem::path& p) {
   XtdPackageReader r(p);
@@ -1605,6 +1728,8 @@ Json::Value InspectXtdPackage(const std::filesystem::path& p) {
   v["capabilities"]["water_level_height"] = r.status().height_available;
   v["capabilities"]["water_level_quality"] =
       r.status().height_quality_available;
+  v["capabilities"]["vertical_datum_transform"] =
+      r.status().vertical_datum_available;
   if (r.status().height_available) {
     v["water_level"]["datum_id"] = r.status().height_datum_id;
     v["water_level"]["datum_name"] = r.status().height_datum_name;

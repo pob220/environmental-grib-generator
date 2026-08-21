@@ -32,6 +32,7 @@ struct XtdPackageStatus {
   bool uncertainty_available{};
   bool height_available{};
   bool height_quality_available{};
+  bool vertical_datum_available{};
   std::string residual_representation;
   std::string height_datum_id;
   std::string height_datum_name;
@@ -47,6 +48,7 @@ struct XtdPackageStatistics {
   XtdStatistics uncertainty;
   XtdStatistics height;
   XtdStatistics height_quality;
+  XtdStatistics vertical_datum;
   std::uint64_t outer_bytes_read{};
 };
 
@@ -94,6 +96,30 @@ struct TideHeightQualityGrid {
   [[nodiscard]] bool has_mask() const { return !mask.empty(); }
 };
 
+// Authenticated spatial transformation from the native water-level datum to
+// the local chart datum used by the hydrographic authority.  A positive
+// offset means that a water level relative to source datum becomes a larger
+// height above chart datum.  Unsupported cells are masked; callers must never
+// silently substitute the source datum.
+struct TideVerticalDatumGrid {
+  RegularGrid grid;
+  std::vector<double> offset_m;
+  std::vector<double> uncertainty_m;
+  std::vector<double> nearest_station_distance_km;
+  std::vector<std::uint8_t> realization_class;
+  std::vector<std::uint8_t> support_class;
+  std::vector<std::uint16_t> station_count;
+  std::vector<std::uint8_t> mask;
+  std::string source_datum_id;
+  std::string source_datum_name;
+  std::string target_datum_id;
+  std::string target_datum_name;
+  std::string epoch;
+
+  void Validate() const;
+  [[nodiscard]] bool has_mask() const { return !mask.empty(); }
+};
+
 class XtdPackageReader {
 public:
   explicit XtdPackageReader(const std::filesystem::path& path,
@@ -117,6 +143,7 @@ public:
                                             bool infer_minor_tides = true);
   TideHeightHarmonics SampleHeightHarmonics(const RegularGrid& output_grid);
   TideHeightQualityGrid SampleHeightQuality(const RegularGrid& output_grid);
+  TideVerticalDatumGrid SampleVerticalDatum(const RegularGrid& output_grid);
   Json::Value VerifyAllComponents();
 
 private:
