@@ -84,9 +84,18 @@ int main() {
     Check(map_failure_caught,
           "ordered map joins workers and propagates worker failure");
 
-    const auto root = std::filesystem::temp_directory_path();
     const auto token = std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("environmental-grib-concurrency-tests-" +
+         std::to_string(eg::ProcessId()) + "-" + token);
+    std::error_code create_error;
+    std::filesystem::create_directories(root, create_error);
+    if (create_error)
+      throw std::runtime_error("cannot create isolated concurrency test "
+                               "directory: " +
+                               create_error.message());
     const auto weather_path =
         root / ("xgrib-concurrency-weather-" + token + ".grb2");
     const auto current_path =
@@ -181,11 +190,17 @@ int main() {
         ".environmental-grib-" + std::to_string(eg::ProcessId());
     const auto count_workspaces = [&] {
       std::size_t count = 0;
-      for (const auto& entry : std::filesystem::directory_iterator(root)) {
-        if (entry.is_directory() &&
-            entry.path().filename().string().rfind(workspace_prefix, 0) == 0)
+      std::error_code iterator_error;
+      std::filesystem::directory_iterator entry(root, iterator_error), end;
+      while (!iterator_error && entry != end) {
+        std::error_code status_error;
+        if (entry->is_directory(status_error) && !status_error &&
+            entry->path().filename().string().rfind(workspace_prefix, 0) ==
+                0)
           ++count;
+        entry.increment(iterator_error);
       }
+      Check(!iterator_error, "isolated workspace directory is readable");
       return count;
     };
     const auto workspaces_before = count_workspaces();
@@ -216,19 +231,9 @@ int main() {
     Check(count_workspaces() == workspaces_before + 2,
           "concurrent generator jobs retain distinct workspaces");
 
-    for (const auto& path :
-         {weather_path, current_path, serial_path, parallel_path,
-          retained_request.output, retained_request_b.output}) {
-      std::error_code ignored;
-      std::filesystem::remove(path, ignored);
-    }
-    for (const auto& entry : std::filesystem::directory_iterator(root)) {
-      if (entry.is_directory() &&
-          entry.path().filename().string().rfind(workspace_prefix, 0) == 0) {
-        std::error_code ignored;
-        std::filesystem::remove_all(entry.path(), ignored);
-      }
-    }
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(root, cleanup_error);
+    Check(!cleanup_error, "isolated concurrency test directory is removed");
   } catch (const std::exception& error) {
     std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
     ++failures;
