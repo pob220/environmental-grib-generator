@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -16,6 +17,7 @@
 #include "environmental_grib/grib.h"
 #include "environmental_grib/model.h"
 #include "environmental_grib/parallel.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/sources.h"
 
 namespace eg = environmental_grib;
@@ -175,10 +177,57 @@ int main() {
     Check(ReadBytes(serial_path) == ReadBytes(parallel_path),
           "component concurrency preserves GRIB bytes exactly");
 
+    const auto workspace_prefix =
+        ".environmental-grib-" + std::to_string(eg::ProcessId());
+    const auto count_workspaces = [&] {
+      std::size_t count = 0;
+      for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        if (entry.is_directory() &&
+            entry.path().filename().string().rfind(workspace_prefix, 0) == 0)
+          ++count;
+      }
+      return count;
+    };
+    const auto workspaces_before = count_workspaces();
+    eg::EnvironmentRequest retained_request;
+    retained_request.bbox = request.bbox;
+    retained_request.start = start;
+    retained_request.hours = 0;
+    retained_request.step_hours = 1;
+    retained_request.weather_provider = "existing-file";
+    retained_request.weather_file = weather_path;
+    retained_request.current_source = "none";
+    retained_request.overwrite = true;
+    retained_request.keep_intermediate = true;
+    retained_request.parallel_components = false;
+    retained_request.output =
+        root / ("xgrib-retained-workspace-a-" + token + ".grb");
+    auto retained_a = std::async(std::launch::async, [&] {
+      return eg::GenerateEnvironment(retained_request, {}, start);
+    });
+    auto retained_request_b = retained_request;
+    retained_request_b.output =
+        root / ("xgrib-retained-workspace-b-" + token + ".grb");
+    auto retained_b = std::async(std::launch::async, [&] {
+      return eg::GenerateEnvironment(retained_request_b, {}, start);
+    });
+    (void)retained_a.get();
+    (void)retained_b.get();
+    Check(count_workspaces() == workspaces_before + 2,
+          "concurrent generator jobs retain distinct workspaces");
+
     for (const auto& path :
-         {weather_path, current_path, serial_path, parallel_path}) {
+         {weather_path, current_path, serial_path, parallel_path,
+          retained_request.output, retained_request_b.output}) {
       std::error_code ignored;
       std::filesystem::remove(path, ignored);
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+      if (entry.is_directory() &&
+          entry.path().filename().string().rfind(workspace_prefix, 0) == 0) {
+        std::error_code ignored;
+        std::filesystem::remove_all(entry.path(), ignored);
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';

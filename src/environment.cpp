@@ -1,5 +1,6 @@
 #include "environmental_grib/environment.h"
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <future>
@@ -27,13 +28,22 @@
 namespace environmental_grib {
 namespace {
 
+std::atomic<std::uint64_t> g_workspace_sequence{0};
+
 class Workspace {
 public:
   explicit Workspace(const std::filesystem::path& output, bool keep)
       : keep_(keep) {
     path_ = output.parent_path().empty() ? std::filesystem::current_path()
                                          : output.parent_path();
-    path_ /= ".environmental-grib-" + std::to_string(ProcessId());
+    // Component generation can recurse through GenerateEnvironment on several
+    // std::async workers in the same helper process.  A PID-only name makes
+    // those child workspaces identical, allowing one completed child to
+    // remove another child's files from underneath it.
+    const auto sequence =
+        g_workspace_sequence.fetch_add(1, std::memory_order_relaxed);
+    path_ /= ".environmental-grib-" + std::to_string(ProcessId()) + "-" +
+             std::to_string(sequence);
     std::filesystem::create_directories(path_);
   }
   ~Workspace() {
