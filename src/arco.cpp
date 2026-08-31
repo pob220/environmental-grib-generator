@@ -81,7 +81,7 @@ std::string DatasetUrl(const std::string& root, const std::string& product,
 
 std::string Suffix(const std::string& username) {
   std::string result =
-      "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.6";
+      "?x-cop-client=environmental-grib-generator&x-cop-client-version=0.1.7";
   if (!username.empty()) {
     result += "&x-cop-user=";
     for (unsigned char c : username) {
