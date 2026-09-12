@@ -25,6 +25,7 @@ struct UkvRequest {
 };
 
 std::vector<int> UkvForecastHours(int hours, int step_hours);
+std::size_t UkvOutputFieldCount(const std::string& preset, int forecast_hour);
 std::string UkvSourceKey(const std::string& cycle, int forecast_hour,
                          const std::string& field_token);
 WeatherGenerateResult GenerateUkv(

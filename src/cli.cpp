@@ -13,6 +13,7 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/environment.h"
+#include "environmental_grib/estimate.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/job.h"
@@ -552,6 +553,15 @@ int RunJob(const std::vector<std::string>& args) {
   }
 }
 
+int EstimateJob(const std::vector<std::string>& args) {
+  if (args.size() != 3 || args[1] != "--job")
+    throw eg::ValidationError("estimate-job requires --job FILE");
+  // Intentionally never enters GenerateEnvironment or reads credentials.
+  PrintJson(eg::EstimateEnvironment(
+      eg::ParseGeneratorJob(ReadJsonFile(eg::PathFromUtf8(args[2]))).request));
+  return 0;
+}
+
 int Capabilities() {
   PrintJson(eg::GeneratorCapabilitiesJson());
   return 0;
@@ -946,6 +956,7 @@ void Usage() {
       << "  generate-rtofs [options]\n"
       << "  generate-environment-grib [options]\n"
       << "  run-job --job FILE --result FILE\n"
+      << "  estimate-job --job FILE (offline; no generation)\n"
       << "  capabilities\n"
       << "  inspect-tpxo-cache FILE\n"
       << "  inspect-xtd FILE\n"
@@ -1001,6 +1012,7 @@ int main(int argc, char** argv) {
     if (args[0] == "generate-environment-grib")
       return GenerateEnvironment(args);
     if (args[0] == "run-job") return RunJob(args);
+    if (args[0] == "estimate-job") return EstimateJob(args);
     if (args[0] == "capabilities") return Capabilities();
     if (args[0] == "inspect-tpxo-cache") return InspectTpxo(args);
     if (args[0] == "inspect-xtd") return InspectXtdPackage(args);

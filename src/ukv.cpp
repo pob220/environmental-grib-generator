@@ -442,6 +442,13 @@ bool UkvProjectionAvailable() {
 #endif
 }
 
+std::size_t UkvOutputFieldCount(const std::string& preset, int forecast_hour) {
+  std::size_t count = 0;
+  for (const auto& token : UkvTokensForPreset(preset, forecast_hour))
+    count += token.find("_on_pressure_levels") == std::string::npos ? 1 : 4;
+  return count;
+}
+
 std::vector<int> UkvForecastHours(int hours, int step) {
   if (hours < 0 || hours > 120)
     throw ValidationError("UKV hours must be between 0 and 120");

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace environmental_grib {
@@ -35,8 +36,10 @@ struct RegularGrid {
 TimePoint ParseUtcDateTime(const std::string& value);
 std::string FormatUtcDateTime(TimePoint value);
 RegularGrid BuildRegularGrid(const BoundingBox& bbox, double spacing_deg);
+// Same validation/rounding as BuildRegularGrid, without allocating coordinates.
+std::pair<std::size_t, std::size_t> RegularGridDimensions(
+    const BoundingBox& bbox, double spacing_deg);
 std::vector<TimePoint> BuildTimeSequence(TimePoint start, int hours,
                                          int step_hours);
 
 }  // namespace environmental_grib
-

@@ -97,7 +97,8 @@ std::string FormatUtcDateTime(TimePoint value) {
   return out.str();
 }
 
-RegularGrid BuildRegularGrid(const BoundingBox& bbox, double spacing_deg) {
+std::pair<std::size_t, std::size_t> RegularGridDimensions(
+    const BoundingBox& bbox, double spacing_deg) {
   bbox.Validate();
   if (!std::isfinite(spacing_deg) || spacing_deg <= 0.0) {
     throw ValidationError("grid spacing must be greater than zero");
@@ -109,6 +110,8 @@ RegularGrid BuildRegularGrid(const BoundingBox& bbox, double spacing_deg) {
     throw ValidationError(
         "grid spacing must be smaller than both bbox width and height");
   }
+  if (width / spacing_deg > 5'000'000 || height / spacing_deg > 5'000'000)
+    throw ValidationError("grid is too large; reduce bbox or increase spacing");
   const auto nx =
       static_cast<std::size_t>(std::llround(width / spacing_deg)) + 1;
   const auto ny =
@@ -119,6 +122,11 @@ RegularGrid BuildRegularGrid(const BoundingBox& bbox, double spacing_deg) {
   if (nx > 5'000'000 / ny) {
     throw ValidationError("grid is too large; reduce bbox or increase spacing");
   }
+  return {nx, ny};
+}
+
+RegularGrid BuildRegularGrid(const BoundingBox& bbox, double spacing_deg) {
+  const auto [nx, ny] = RegularGridDimensions(bbox, spacing_deg);
   RegularGrid grid;
   grid.spacing_deg = spacing_deg;
   grid.latitude_spacing_deg = spacing_deg;

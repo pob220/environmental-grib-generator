@@ -71,6 +71,7 @@ endif()
 add_library(environmental_grib_engine STATIC
   src/arco.cpp
   src/environment.cpp
+  src/estimate.cpp
   src/copernicus.cpp
   src/geo.cpp
   src/grib.cpp
@@ -122,6 +123,12 @@ if(MSVC)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(environmental_grib_estimate_tests tests/estimate_tests.cpp)
+  target_link_libraries(environmental_grib_estimate_tests PRIVATE environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_estimate_tests)
+  endif()
+  add_test(NAME environmental_grib_estimate_tests COMMAND environmental_grib_estimate_tests)
   add_executable(environmental_grib_tests tests/engine_tests.cpp)
   target_link_libraries(environmental_grib_tests PRIVATE environmental_grib_engine)
   if(MSVC)

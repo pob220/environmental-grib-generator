@@ -152,6 +152,7 @@ Json::Value GeneratorCapabilitiesJson() {
   value["schemaVersion"] = kJobSchemaVersion;
   value["generatorVersion"] = kGeneratorVersion;
   value["operations"] = StringArray({"generateEnvironment"});
+  value["offlineEstimateCommand"] = "estimate-job";
   value["weatherProviders"] = StringArray(
       {"none", "existing-file", "gfs", "noaa_hrrr", "ukmo_ukv",
        "metno_nordic", "dwd_icon_eu", "ecmwf_ifs_open",
