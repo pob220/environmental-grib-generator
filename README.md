@@ -8,6 +8,10 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Version 0.1.8 adds offline `estimate-job` planning for supported weather, wave
+and current outputs, plus pre-generation versus measured-size reports in
+completed jobs. See [coverage and reporting limits](docs/estimates.md).
+
 Weather generation supports NOAA GFS and HRRR, Met Office UKV, MET Norway's
 Nordic forecast, DWD ICON-EU, and ECMWF IFS/AIFS Open Data. Presets are
 `minimal`, `routing`, `marine`, and provider-aware `all`. The latter selects
