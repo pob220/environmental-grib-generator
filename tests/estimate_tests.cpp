@@ -65,6 +65,26 @@ int main() {
     Check(!eg::EstimateEnvironment(r)["complete"].asBool(), "unknown waves are not zero");
     r.include_waves = false;
     Check(eg::EstimateEnvironment(r)["decodedBytes"].asUInt64() == 0, "no components");
+    for (const auto* provider : {"copernicus_nws", "copernicus_global",
+                                 "copernicus_ibi", "copernicus_mediterranean"}) {
+      r.current_source = provider;
+      Check(eg::EstimateEnvironment(r)["knownRecords"].asUInt64() == 98,
+            "Copernicus current output uses requested cadence, not native grid");
+    }
+    r.current_source = "none";
+    r.include_waves = true; r.wave_provider = "copernicus_global_waves";
+    r.weather_grid_spacing_deg = 0.1;
+    e = eg::EstimateEnvironment(r);
+    Check(e["complete"].asBool() && e["knownRecords"].asUInt64() == 51 &&
+          e["decodedBytes"].asUInt64() == 51 * 121 * 8,
+          "Copernicus wave writer grid and independent 3-hour cadence");
+    r.hours = 240;
+    Check(eg::EstimateEnvironment(r)["knownRecords"].asUInt64() == 243, "wave endpoint");
+    r.hours = 243; Invalid([&] { eg::EstimateEnvironment(r); });
+    r.hours = 4; Invalid([&] { eg::EstimateEnvironment(r); });
+    r.hours = 48; r.wave_step_hours = 1;
+    Invalid([&] { eg::EstimateEnvironment(r); });
+    r.wave_step_hours = 3; r.include_waves = false;
     r.bbox.west = 179; r.bbox.east = -179;
     Invalid([&] { eg::EstimateEnvironment(r); });
     r.bbox = {-6, 53, -5, 54}; r.current_source = "synthetic";
@@ -104,6 +124,45 @@ int main() {
     }
     eg::WriteGrib1Currents(currents, output);
     e = eg::EstimateEnvironment(r);
+    eg::EnvironmentResult generated;
+    generated.output = output;
+    generated.inspection = eg::InspectGrib(output);
+    generated.byte_count = std::filesystem::file_size(output);
+    generated.message_count = currents.size() * 2;
+    r.copernicus_username = "private-user";
+    r.copernicus_password = "private-password";
+    r.offline_tidal_file = "/private-path/model.xtd";
+    r.metno_dataset_url = "https://private-url.invalid";
+    auto report = eg::BuildSizeComparison(r, e, generated);
+    Check(report["actual"]["numericComplete"].asBool() &&
+          report["actual"]["decodedBytes"] == e["decodedBytes"] &&
+          report["numericStatus"].asString() == "exact" &&
+          report["fileStatus"].asString() == "within_upper_estimate",
+          "report reuses actual inventory including missing cells");
+    Check(report.toStyledString().find("private-") == std::string::npos,
+          "report excludes credentials, local source paths and URLs");
+    auto inaccurate = e;
+    inaccurate["decodedBytes"] = Json::UInt64(1);
+    inaccurate["fileUpperBytes"] = Json::UInt64(1);
+    report = eg::BuildSizeComparison(r, inaccurate, generated);
+    Check(report["numericStatus"].asString() == "underestimate" &&
+          report["fileStatus"].asString() == "exceeds_upper_estimate", "underestimate visible");
+    inaccurate["decodedBytes"] = Json::UInt64(e["decodedBytes"].asUInt64() + 1);
+    Check(eg::BuildSizeComparison(r, inaccurate, generated)["numericStatus"].asString() ==
+          "overestimate", "overestimate visible");
+    r.extend_forecast = true;
+    report = eg::BuildSizeComparison(r, eg::EstimateEnvironment(r), generated);
+    Check(report["actual"]["numericComplete"].asBool() &&
+          report["numericStatus"].asString() == "unknown",
+          "complete actual inventory even when extension estimate is unknown");
+    r.extend_forecast = false;
+    generated.inspection["messages"][0].removeMember("values");
+    report = eg::BuildSizeComparison(r, e, generated);
+    Check(!report["actual"]["numericComplete"].asBool() &&
+          !report["actual"].isMember("decodedBytes"), "partial inventory is not a total");
+    generated.inspection["messages"] = Json::Value(Json::arrayValue);
+    Check(!eg::BuildSizeComparison(r, e, generated)["actual"]["numericComplete"].asBool(),
+          "missing inventory is not a zero total");
     Check(std::filesystem::file_size(output) <= e["fileUpperBytes"].asUInt64(),
           "actual current GRIB fits planning upper estimate");
     FILE* input = std::fopen(eg::PathToUtf8(output).c_str(), "rb");

@@ -516,6 +516,14 @@ int RunJob(const std::vector<std::string>& args) {
 
   try {
     auto job = eg::ParseGeneratorJob(ReadJsonFile(job_path));
+    Json::Value size_estimate(Json::objectValue);
+    try {
+      size_estimate = eg::EstimateEnvironment(job.request);
+    } catch (const std::exception&) {
+      // Optional diagnostics must never prevent a supported generation.
+      size_estimate["complete"] = false;
+      size_estimate["reason"] = "Pre-generation estimate unavailable for this request.";
+    }
     if (const char* password =
             std::getenv(job.copernicus_password_environment.c_str())) {
       job.request.copernicus_password = password;
@@ -532,6 +540,14 @@ int RunJob(const std::vector<std::string>& args) {
         eg::GenerateEnvironment(job.request, {}, std::nullopt, progress);
     auto result = eg::JobStatusJson("complete");
     result["result"] = eg::EnvironmentResultJson(generated);
+    if (!job.request.dry_run) {
+      try {
+        result["result"]["size_comparison"] =
+            eg::BuildSizeComparison(job.request, size_estimate, generated);
+      } catch (const std::exception&) {
+        result["result"]["size_comparison_warning"] = "Size comparison unavailable.";
+      }
+    }
     eg::WriteJsonFileAtomic(result_path, result);
     Json::Value complete = result;
     complete["event"] = "complete";

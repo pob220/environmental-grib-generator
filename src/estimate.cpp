@@ -6,6 +6,7 @@
 #include <set>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/platform.h"
 #include "environmental_grib/ukv.h"
 
 namespace environmental_grib {
@@ -105,9 +106,21 @@ Json::Value EstimateEnvironment(const EnvironmentRequest& r) {
     } else if (r.weather_provider != "none") {
       unknown("weather", "Native grid or selected field/level inventory is needed.");
     }
-    if (r.include_waves)
-      unknown("waves", "Wave source grid and record inventory are needed.");
-    if (std::set<std::string>{"synthetic", "netcdf", "tpxo", "offline-tidal"}
+    if (r.include_waves) {
+      if (r.wave_provider == "copernicus_global_waves") {
+        if (r.wave_step_hours != 3 || r.hours > 240 || r.hours % 3)
+          throw ValidationError("Copernicus waves require 3-hour steps and 0..240 hours divisible by 3");
+        // GenerateEnvironment passes weather_grid_spacing_deg to the wave
+        // writer too; do not substitute the provider's native resolution.
+        known("Copernicus waves", cells(r.weather_grid_spacing_deg),
+              Multiply(3, BuildTimeSequence(r.start, r.hours, r.wave_step_hours).size()), 3);
+      } else {
+        unknown("waves", "Wave source grid and record inventory are needed.");
+      }
+    }
+    if (std::set<std::string>{"synthetic", "netcdf", "tpxo", "offline-tidal",
+                             "copernicus_nws", "copernicus_global",
+                             "copernicus_ibi", "copernicus_mediterranean"}
             .contains(r.current_source)) {
       known("currents", cells(r.current_grid_spacing_deg),
             Multiply(2, BuildTimeSequence(r.start, r.hours, r.step_hours).size()), 2);
@@ -122,5 +135,71 @@ Json::Value EstimateEnvironment(const EnvironmentRequest& r) {
   if (complete) result["decodedBytes"] = Json::UInt64(decoded);
   if (file_complete) result["fileUpperBytes"] = Json::UInt64(packed_upper);
   return result;
+}
+
+Json::Value BuildSizeComparison(const EnvironmentRequest& r,
+                               const Json::Value& estimate,
+                               const EnvironmentResult& generated) {
+  Json::Value report(Json::objectValue);
+  report["schemaVersion"] = 1;
+  report["requestBasis"] = "Captured before generation; credentials and local source paths omitted.";
+  report["outputFile"] = PathToUtf8(generated.output.filename());
+  auto& request = report["request"];
+  request["bbox"]["west"] = r.bbox.west;
+  request["bbox"]["south"] = r.bbox.south;
+  request["bbox"]["east"] = r.bbox.east;
+  request["bbox"]["north"] = r.bbox.north;
+  request["start"] = FormatUtcDateTime(r.start);
+  request["hours"] = r.hours;
+  request["stepHours"] = r.step_hours;
+  request["cycle"] = r.cycle;
+  if (r.date) request["date"] = *r.date;
+  request["weatherProvider"] = r.weather_provider;
+  request["weatherPreset"] = r.weather_preset;
+  request["weatherGridSpacingDeg"] = r.weather_grid_spacing_deg;
+  request["includeWaves"] = r.include_waves;
+  request["waveProvider"] = r.wave_provider;
+  request["waveStepHours"] = r.wave_step_hours;
+  request["currentSource"] = r.current_source;
+  request["currentGridSpacingDeg"] = r.current_grid_spacing_deg;
+  request["extendForecast"] = r.extend_forecast;
+  request["fallbackWeatherProvider"] = r.fallback_weather_provider;
+  request["fallbackWaveProvider"] = r.fallback_wave_provider;
+  request["fallbackCurrentSource"] = r.fallback_current_source;
+  report["estimate"] = estimate;
+  auto& actual = report["actual"];
+  actual["fileBytes"] = Json::UInt64(generated.byte_count);
+  actual["records"] = Json::UInt64(generated.message_count);
+  const auto& messages = generated.inspection["messages"];
+  bool complete = messages.isArray() && generated.message_count > 0 &&
+                  messages.size() == generated.message_count;
+  Count numeric = 0;
+  // Reuse the existing final validation inventory: no additional file scan,
+  // array decoding or forecast loading solely for the size report.
+  if (messages.isArray()) {
+    for (const auto& message : messages) {
+      const auto& count = message["values"]["count"];
+      if (!count.isUInt64() || count.asUInt64() == 0) {
+        complete = false;
+        continue;
+      }
+      numeric = Add(numeric, Multiply(count.asUInt64(), sizeof(double)));
+    }
+  }
+  actual["numericComplete"] = complete;
+  actual["knownDecodedBytes"] = Json::UInt64(numeric);
+  if (complete) actual["decodedBytes"] = Json::UInt64(numeric);
+  report["numericStatus"] = "unknown";
+  if (complete && estimate["decodedBytes"].isUInt64()) {
+    const auto predicted = estimate["decodedBytes"].asUInt64();
+    report["numericStatus"] = predicted == numeric ? "exact" :
+        predicted > numeric ? "overestimate" : "underestimate";
+  }
+  report["fileStatus"] = "unknown";
+  if (estimate["fileUpperBytes"].isUInt64())
+    report["fileStatus"] = generated.byte_count <= estimate["fileUpperBytes"].asUInt64()
+        ? "within_upper_estimate" : "exceeds_upper_estimate";
+  report["note"] = "Numeric storage includes missing cells, each field, level and time at eight bytes per cell; not total application RAM. Contains requested area/time; review before sharing.";
+  return report;
 }
 }  // namespace environmental_grib

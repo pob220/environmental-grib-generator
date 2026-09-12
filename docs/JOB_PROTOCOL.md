@@ -76,3 +76,11 @@ preferred source nor its selected fallback covers the requested UTC end.
 `environmental-grib capabilities` reports the job schema, helper version,
 progress protocol, and implemented providers. Unknown schema versions,
 operations, options, and malformed values are rejected before generation.
+## Optional size comparison (additive v1 field)
+
+Successful non-dry-run `run-job` results may include `result.size_comparison`.
+Its schemaVersion 1 object contains a credential-free, size-relevant `request`,
+the pre-generation `estimate`, final `actual` counts, and `numericStatus` /
+`fileStatus`. `actual.decodedBytes` is present only when `numericComplete` is
+true. Older clients can ignore this field and newer clients must accept its
+absence. See `estimates.md` for coverage, privacy and RAM limitations.

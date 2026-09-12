@@ -129,6 +129,12 @@ if(BUILD_TESTING)
     environmental_grib_enable_windows_utf8(environmental_grib_estimate_tests)
   endif()
   add_test(NAME environmental_grib_estimate_tests COMMAND environmental_grib_estimate_tests)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME environmental_grib_size_report_cli_tests
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/size_report_cli_tests.py
+              $<TARGET_FILE:environmental-grib>)
+  endif()
   add_executable(environmental_grib_tests tests/engine_tests.cpp)
   target_link_libraries(environmental_grib_tests PRIVATE environmental_grib_engine)
   if(MSVC)

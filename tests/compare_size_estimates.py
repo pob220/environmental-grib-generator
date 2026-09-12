@@ -15,11 +15,25 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--generator", required=True, type=Path)
-    parser.add_argument("--cases", required=True, type=Path)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--cases", type=Path)
+    selection.add_argument("--reports", nargs="+", type=Path,
+                           help="GUI .size-report.json files beside their GRIBs")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     generator = args.generator.resolve(strict=True)
-    cases = json.loads(args.cases.read_text())
+    if args.cases:
+        cases = json.loads(args.cases.read_text())
+    else:
+        cases = []
+        for path in args.reports:
+            report = json.loads(path.read_text())
+            filename = report["outputFile"]
+            if report["schemaVersion"] != 1 or Path(filename).name != filename:
+                raise ValueError(f"Unsupported or unsafe report: {path}")
+            cases.append({"name": filename, "file": str(path.parent / filename),
+                          "request_basis": report["requestBasis"],
+                          "request": report["request"], "captured_report": report})
     args.output.mkdir(parents=True, exist_ok=False)
     output = args.output.resolve()
     rows = []
@@ -38,6 +52,14 @@ def main():
             str(source)], text=True, timeout=120))["messages"]
         if not inventory: raise ValueError(f"No GRIB records in {source}")
         actual_numeric = sum(int(item["numberOfPoints"]) * 8 for item in inventory)
+        captured = case.get("captured_report")
+        if captured:
+            recorded = captured["actual"]
+            if (recorded["fileBytes"] != before.st_size or
+                    recorded["records"] != len(inventory) or
+                    (recorded.get("numericComplete") and
+                     recorded["decodedBytes"] != actual_numeric)):
+                raise ValueError(f"Report no longer matches output inventory: {source}")
         with source.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         after = source.stat()
@@ -59,6 +81,10 @@ def main():
                "numeric_status": numeric_status, "file_status": file_status,
                "numeric_overestimate_percent": None if predicted is None else
                    100 * (predicted / actual_numeric - 1), "estimate": estimate}
+        if captured:
+            row["captured_estimate"] = captured["estimate"]
+            row["captured_numeric_status"] = captured["numericStatus"]
+            row["captured_file_status"] = captured["fileStatus"]
         rows.append(row)
         (output/f"inventory-{number}.json").write_text(json.dumps(inventory, indent=2)+"\n")
         print(case["name"], numeric_status, file_status,

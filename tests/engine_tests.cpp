@@ -14,6 +14,7 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/arco.h"
 #include "environmental_grib/environment.h"
+#include "environmental_grib/estimate.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/grib.h"
@@ -1179,6 +1180,14 @@ int main() {
   copernicus_request.password = "secret";
   copernicus_request.output = copernicus_output;
   copernicus_request.overwrite = true;
+  eg::EnvironmentRequest current_size_request;
+  current_size_request.bbox = copernicus_request.bbox;
+  current_size_request.start = start;
+  current_size_request.hours = copernicus_request.hours;
+  current_size_request.current_grid_spacing_deg = copernicus_request.grid_spacing_deg;
+  current_size_request.weather_provider = "none";
+  current_size_request.current_source = "copernicus_nws";
+  const auto current_size_estimate = eg::EstimateEnvironment(current_size_request);
   const std::string copernicus_product =
       R"({"links":[{"rel":"item","href":"cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT1H-i_202607/dataset.stac.json"}]})";
   const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1262,6 +1271,16 @@ int main() {
           eg::InspectGrib(copernicus_output)["current_component_counts"]["v_50"]
                   .asUInt64() == 1,
       "Copernicus dynamic STAC and Blosc Zarr conversion");
+  eg::EnvironmentResult current_size_result;
+  current_size_result.output = copernicus_output;
+  current_size_result.inspection = eg::InspectGrib(copernicus_output);
+  current_size_result.message_count = copernicus.message_count;
+  current_size_result.byte_count = copernicus.byte_count;
+  const auto current_size_report = eg::BuildSizeComparison(
+      current_size_request, current_size_estimate, current_size_result);
+  Check(current_size_report["numericStatus"].asString() == "exact" &&
+        current_size_report["fileStatus"].asString() == "within_upper_estimate",
+        "pre-generation Copernicus estimate matches mocked provider conversion");
   const auto copernicus_partial_output = Temp("copernicus-partial.grb");
   eg::CopernicusRequest copernicus_partial_request = copernicus_request;
   copernicus_partial_request.hours = 2;
@@ -1419,6 +1438,15 @@ int main() {
   const auto height_chunk = BloscInt16(std::vector<std::int16_t>(9, 200));
   const auto period_chunk = BloscInt16(std::vector<std::int16_t>(9, 800));
   const auto direction_chunk = BloscInt16(std::vector<std::int16_t>(9, 9000));
+  eg::EnvironmentRequest wave_size_request;
+  wave_size_request.bbox = {-7.0, 51.5, -6.0, 52.5};
+  wave_size_request.start = start + std::chrono::hours(1);
+  wave_size_request.hours = 0;
+  wave_size_request.weather_provider = "none";
+  wave_size_request.weather_grid_spacing_deg = 0.5;
+  wave_size_request.include_waves = true;
+  wave_size_request.wave_provider = "copernicus_global_waves";
+  const auto wave_size_estimate = eg::EstimateEnvironment(wave_size_request);
   const auto remote_waves = eg::GenerateCopernicusGlobalWaves(
       eg::BoundingBox{-7.0, 51.5, -6.0, 52.5}, start + std::chrono::hours(1), 0,
       3, "test-user", "secret", remote_wave_output, 0.5, true,
@@ -1440,6 +1468,16 @@ int main() {
                     .asUInt64() == 1,
         "Copernicus Global packed wave ARCO conversion accepts a bounded "
         "off-cycle start");
+  eg::EnvironmentResult wave_size_result;
+  wave_size_result.output = remote_wave_output;
+  wave_size_result.inspection = remote_waves.inspection;
+  wave_size_result.message_count = remote_waves.message_count;
+  wave_size_result.byte_count = remote_waves.byte_count;
+  const auto wave_size_report = eg::BuildSizeComparison(
+      wave_size_request, wave_size_estimate, wave_size_result);
+  Check(wave_size_report["numericStatus"].asString() == "exact" &&
+        wave_size_report["fileStatus"].asString() == "within_upper_estimate",
+        "pre-generation wave estimate matches mocked provider conversion");
 #ifdef ENVIRONMENTAL_GRIB_HAVE_PROJ
   const auto ukv_pressure = Temp("ukv-pressure.nc");
   const auto ukv_temperature = Temp("ukv-temperature.nc");
