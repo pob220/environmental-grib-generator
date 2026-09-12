@@ -42,3 +42,19 @@ Cross-dateline requests remain rejected consistently with the generator.
 No live-provider accuracy or Windows/macOS GUI qualification is claimed here.
 Further work: cached header inventories, extension handover plans and pinned
 provider-output comparisons, before describing coverage as complete.
+
+## Comparing archived provider files
+
+`tests/compare_size_estimates.py --generator PATH --cases cases.json --output NEW_DIRECTORY`
+compares the actual helper result with ecCodes record inventories and file sizes.
+Each case supplies `name`, `file`, `request_basis` and `request` (the normal job
+request object). Inputs are read-only, hashed, and checked for changes during
+the scan. There is no download and no generation. Preserve original request
+metadata for new captures; explicitly label retrospective reconstructions.
+
+The first local corpus (12 September 2026) matched decoded numeric storage
+exactly for a 54-hour UKV routing file, a mixed-resolution 24-hour UKV/TPXO file
+and a small-area 24-hour TPXO file. Packed bytes stayed below all three upper
+planning estimates. A 24-hour GFS routing file had an 8.16% conservative numeric
+overestimate from edge alignment; its packed size correctly remained unknown.
+These were reconstructed requests, not independent prospective request tests.
