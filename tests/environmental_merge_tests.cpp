@@ -77,7 +77,7 @@ void ProviderWind(const std::filesystem::path& path, double first,
                   bool negative_scan = false, int edition = 2) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   for (const char* field : {"10u", "10v"}) {
-    auto* h = codes_handle_new_from_samples(
+    auto* h = grib_handle_new_from_samples(
         nullptr, edition == 1 ? "regular_ll_sfc_grib1" : "regular_ll_sfc_grib2");
     Check(h != nullptr, "create provider-style fixture");
     const auto set = [&](const char* key, double value) {

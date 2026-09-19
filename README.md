@@ -8,6 +8,10 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Version 0.1.11 retains the 0.1.10 global/wrapped-grid fix and makes its
+provider-style regression fixture compatible with the older ecCodes shipped
+by Ubuntu 22.04.
+
 Version 0.1.10 fixes weather/current merge coverage for global and wrapped
 regular longitude grids, including ECMWF IFS/AIFS near Tonga. Coverage uses
 the column count, longitude increment and scan direction rather than sorting
