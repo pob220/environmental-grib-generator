@@ -1,4 +1,5 @@
 #include "environmental_grib/copernicus.h"
+#include "environmental_grib/cancellation.h"
 
 #include <blosc.h>
 #include <curl/curl.h>
@@ -75,7 +76,9 @@ bool ValidateCredentialsImpl(const std::string& username,
                    static_cast<long>(timeout * 1000.0));
   curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
+  ConfigureJobCurl(curl.get());
   const auto status = curl_easy_perform(curl.get());
+  CheckCancellation();
   long http = 0;
   curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http);
   if (status != CURLE_OK)
@@ -105,7 +108,9 @@ bool ValidateCredentialsImpl(const std::string& username,
   curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT_MS,
                    static_cast<long>(timeout * 1000.0));
   curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
+  ConfigureJobCurl(curl.get());
   const auto user_status = curl_easy_perform(curl.get());
+  CheckCancellation();
   curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http);
   if (user_status != CURLE_OK || http != 200)
     throw ValidationError("Copernicus user-information validation failed");

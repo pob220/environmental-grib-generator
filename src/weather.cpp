@@ -1,4 +1,5 @@
 #include "environmental_grib/weather.h"
+#include "environmental_grib/cancellation.h"
 
 #include <curl/curl.h>
 #include <bzlib.h>
@@ -639,7 +640,9 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output);
   curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
                    static_cast<curl_off_t>(512ULL * 1024ULL * 1024ULL));
+  ConfigureJobCurl(curl);
   const CURLcode status = curl_easy_perform(curl);
+  CheckCancellation();
   long response = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
   if (status != CURLE_OK)
@@ -1163,7 +1166,9 @@ std::vector<unsigned char> CurlHttpGetRange(const std::string& url,
                    static_cast<long>(timeout_seconds * 1000.0));
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output);
+  ConfigureJobCurl(curl);
   const CURLcode status = curl_easy_perform(curl);
+  CheckCancellation();
   long response = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
   if (status != CURLE_OK)
