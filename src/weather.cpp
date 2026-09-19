@@ -42,7 +42,7 @@ constexpr const char* kHrrrBase =
 const std::map<std::string, std::string> kRoutingFields{
     {"var_UGRD", "on"},
     {"var_VGRD", "on"},
-    {"var_PRES", "on"},
+    {"var_PRMSL", "on"},
     {"var_TMP", "on"},
     {"lev_10_m_above_ground", "on"},
     {"lev_mean_sea_level", "on"},

@@ -908,6 +908,8 @@ int main() {
         "generic GRIB2 weather/wave writer");
 
   const auto weather_fields = eg::GfsVariablesForPreset("routing");
+  Check(weather_fields.contains("var_PRMSL") && !weather_fields.contains("var_PRES"),
+        "GFS routing requests PRMSL:mean sea level, not surface PRES");
   const auto all_weather_fields = eg::GfsVariablesForPreset("all");
   Check(all_weather_fields.contains("var_GUST") &&
             all_weather_fields.contains("var_REFC") &&
