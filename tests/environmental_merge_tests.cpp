@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include <eccodes.h>
 #include <json/json.h>
 
 #include "environmental_grib/geo.h"
@@ -69,6 +70,132 @@ bool Near(double actual, double expected, double tolerance = 1e-4) {
   return std::abs(actual - expected) <= tolerance;
 }
 
+// Encode provider-style headers directly, including wrapped endpoints and
+// reversed scanning which the local regular-grid writer does not produce.
+void ProviderWind(const std::filesystem::path& path, double first,
+                  double last, long ni, double increment,
+                  bool negative_scan = false, int edition = 2) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  for (const char* field : {"10u", "10v"}) {
+    auto* h = codes_handle_new_from_samples(
+        nullptr, edition == 1 ? "regular_ll_sfc_grib1" : "regular_ll_sfc_grib2");
+    Check(h != nullptr, "create provider-style fixture");
+    const auto set = [&](const char* key, double value) {
+      Check(codes_set_double(h, key, value) == 0, std::string("set ") + key);
+    };
+    std::size_t length = std::char_traits<char>::length(field);
+    Check(codes_set_string(h, "shortName", field, &length) == 0, "set wind field");
+    set("dataDate", 20260712);
+    set("dataTime", 0);
+    set("Ni", ni);
+    set("Nj", 3);
+    set("latitudeOfFirstGridPointInDegrees", -18);
+    set("latitudeOfLastGridPointInDegrees", -22);
+    set("longitudeOfFirstGridPointInDegrees", first);
+    set("longitudeOfLastGridPointInDegrees", last);
+    set("iDirectionIncrementInDegrees", increment);
+    set("jDirectionIncrementInDegrees", 2);
+    set("iScansNegatively", negative_scan);
+    set("jScansPositively", 0);
+    const std::vector<double> values(ni * 3, field[2] == 'u' ? 5.0 : -2.0);
+    Check(codes_set_double_array(h, "values", values.data(), values.size()) == 0,
+          "set provider wind values");
+    const void* message = nullptr;
+    Check(codes_get_message(h, &message, &length) == 0, "encode provider wind");
+    out.write(static_cast<const char*>(message), length);
+    codes_handle_delete(h);
+  }
+  Check(static_cast<bool>(out), "write provider wind fixture");
+}
+
+void CheckLongitudeCoverage(const std::filesystem::path& root,
+                            eg::TimePoint start) {
+  const auto wind = root / "provider-longitudes.grb";
+  const auto current = root / "tonga-current.grb";
+  eg::EnvironmentalMergeRequest request;
+  request.weather = wind;
+  request.current = current;
+  request.output = root / "longitude-merge.grb";
+  request.overwrite = true;
+  const auto check_merge = [&](double longitude, double latitude,
+                               bool expected, const std::string& label) {
+    eg::WriteGrib1Currents({Current(Grid(longitude, latitude), start, 0)}, current);
+    const auto result = eg::MergeEnvironmentalGribs(request);
+    Check(result.success == expected, label);
+    if (expected) {
+      Check(result.output_message_count == 4, label + " preserves all fields");
+      Check(Near(result.output_inspection["messages"][0]["values"]["mean"].asDouble(), 5),
+            label + " preserves weather values");
+    } else {
+      Check(!result.errors.empty() && result.errors.front() ==
+                "weather and current GRIB geographic coverage does not overlap",
+            label + " rejects geographic mismatch");
+    }
+  };
+
+  for (const int edition : {1, 2}) {
+    for (const double origin : {0.0, 180.0}) {
+      for (const bool reversed : {false, true}) {
+        const double last = std::fmod(origin + (reversed ? 0.25 : 359.75), 360.0);
+        ProviderWind(wind, origin, last, 1440, 0.25, reversed, edition);
+        const auto coverage = eg::InspectGrib(wind)["coverage"];
+        Check(Near(coverage["west"].asDouble(), -180) &&
+                  Near(coverage["east"].asDouble(), 180),
+              "cyclic global longitude coverage is the whole globe");
+        check_merge(-179.9, -21, true, "global grid overlaps Tonga");
+        check_merge(179.7, -21, true, "global grid overlaps Fiji side");
+        check_merge(-0.1, -21, true, "global grid overlaps Greenwich");
+        check_merge(-175, 20, false, "global longitude still checks latitude");
+      }
+    }
+  }
+  ProviderWind(wind, 180, 180, 1441, 0.25);
+  check_merge(-179, -21, true, "global grid with duplicate seam endpoint");
+
+  for (const bool reversed : {false, true}) {
+    ProviderWind(wind, reversed ? 190 : 170, reversed ? 170 : 190,
+                 81, 0.25, reversed);
+    check_merge(-175, -21, true, "wrapped regional grid overlaps Tonga");
+    check_merge(175, -21, true, "wrapped regional grid overlaps Fiji");
+    check_merge(0, -21, false, "wrapped regional grid excludes Greenwich");
+    check_merge(-160, -21, false, "wrapped regional grid excludes eastern gap");
+  }
+  ProviderWind(wind, 180, 190, 41, 0.25);
+  check_merge(-179.9, -21, true, "regional grid starting at positive 180");
+  check_merge(175, -21, false, "regional grid is not mistaken for global");
+  ProviderWind(wind, 350, 10, 81, 0.25);
+  check_merge(-5, -21, true, "0-to-360 regional grid crosses Greenwich");
+  check_merge(-175, -21, false, "Greenwich region excludes Tonga");
+  ProviderWind(wind, 10, 350, 1361, 0.25);
+  check_merge(175, -21, true, "wide regional grid uses scan extent, not shortest arc");
+  check_merge(0, -21, false, "wide regional grid preserves uncovered gap");
+  ProviderWind(wind, 170, 180, 41, 0.25);
+  check_merge(-180, -21, true, "positive and negative 180 denote same boundary");
+
+  const auto other_wind = root / "other-region-wind.grb";
+  const auto regional_wind = root / "two-region-wind.grb";
+  ProviderWind(other_wind, 200, 210, 41, 0.25);
+  eg::MergeGribStreams({{"west", wind}, {"east", other_wind}}, regional_wind, true);
+  request.weather = regional_wind;
+  check_merge(-175, -21, false, "separate grids do not fill their geographic gap");
+
+  // Preserve a stable combined global/regional fixture for the production
+  // xGRIB reader, and verify optional waves survive the same merge path.
+  const auto tonga_grid = eg::BuildRegularGrid({-179.9, -22, -170, -18}, 0.1);
+  eg::WriteGrib1Currents({Current(tonga_grid, start, 0)}, current);
+  ProviderWind(wind, 180, 179.75, 1440, 0.25);
+  const auto waves = root / "tonga-waves.grb2";
+  eg::WriteRegularLatLonGrib2(tonga_grid, start,
+      {{0, "swh", std::vector<double>(tonga_grid.size(), 2.0), {}}}, waves);
+  request.weather = wind;
+  request.waves = waves;
+  request.output = root / "tonga-combined.grb";
+  const auto tonga = eg::MergeEnvironmentalGribs(request);
+  Check(tonga.success && tonga.output_message_count == 5 &&
+            tonga.output_inspection["short_name_counts"]["swh"].asUInt64() == 1,
+        "global weather, Tonga current and optional waves merge intact");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -77,6 +204,7 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(root);
 
   const auto start = eg::ParseUtcDateTime("2026-07-12T00:00:00Z");
+  CheckLongitudeCoverage(root, start);
   const auto grid = Grid();
   const auto wind = root / "wind-known.grb2";
   const auto current_matching = root / "current-matching.grb";

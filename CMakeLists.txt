@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(environmental_grib_generator VERSION 0.1.8 LANGUAGES CXX)
+project(environmental_grib_generator VERSION 0.1.10 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)

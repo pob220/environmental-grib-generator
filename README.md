@@ -8,7 +8,17 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
-Version 0.1.8 adds offline `estimate-job` planning for supported weather, wave
+Version 0.1.10 fixes weather/current merge coverage for global and wrapped
+regular longitude grids, including ECMWF IFS/AIFS near Tonga. Coverage uses
+the column count, longitude increment and scan direction rather than sorting
+the first/last longitude. The inspection's `coverage.regions` array preserves
+individual rectangles with an unwrapped east longitude (possibly above 180),
+while the existing coverage bounds remain a conventional envelope. Merge
+validation compares these regions modulo 360, preserving gaps and latitude
+restrictions. GRIB data and coordinates are not rewritten. This does not add
+support for antimeridian-crossing generation request boxes.
+
+Version 0.1.8 added offline `estimate-job` planning for supported weather, wave
 and current outputs, plus pre-generation versus measured-size reports in
 completed jobs. See [coverage and reporting limits](docs/estimates.md).
 

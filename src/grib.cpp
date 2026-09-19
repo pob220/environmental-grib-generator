@@ -146,6 +146,37 @@ double NormalizeLongitude(double value) {
   return normalized == -180.0 && value > 0.0 ? 180.0 : normalized;
 }
 
+// Return an eastward, unwrapped interval. Endpoints alone are not bounds:
+// ECMWF's 1440-column global grid starts at 180 and ends at 179.75.
+std::pair<double, double> LongitudeExtent(codes_handle* handle, double first,
+                                          double last) {
+  const auto type = GetString(handle, "gridType").value_or("");
+  if (type != "regular_ll" && type != "regular_gg") {
+    // Projected/rotated grids do not express their i increment in geographic
+    // longitude. Retain the existing endpoint envelope for those grids.
+    return std::minmax(NormalizeLongitude(first), NormalizeLongitude(last));
+  }
+  const bool negative = GetLong(handle, "iScansNegatively").value_or(0) != 0;
+  double span = std::fmod((negative ? first - last : last - first) + 720.0,
+                          360.0);
+  const auto ni = GetLong(handle, "Ni");
+  const auto increment = GetDouble(handle, "iDirectionIncrementInDegrees");
+  constexpr double tolerance = 1e-5;
+  if (ni && *ni > 1 && increment && std::isfinite(*increment) &&
+      *increment > 0 && *increment <= 360.0) {
+    const double grid_span = (*ni - 1) * *increment;
+    if (grid_span <= 360.0 + tolerance) {
+      // A cyclic grid need not repeat its first column at the end.
+      if (grid_span + *increment >= 360.0 - tolerance)
+        return {-180.0, 180.0};
+      span = grid_span;
+    }
+  }
+  double west = NormalizeLongitude(negative ? first - span : first);
+  if (west == 180.0) west = -180.0;
+  return {west, west + span};
+}
+
 void Increment(Json::Value& object, const std::string& key) {
   object[key] = object.get(key, 0).asUInt64() + 1;
 }
@@ -372,6 +403,7 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
   std::set<std::string> valid_times;
   bool have_coverage = false;
   Json::Value coverage(Json::objectValue);
+  Json::Value coverage_regions(Json::arrayValue);
   double coverage_west = 0.0, coverage_south = 0.0, coverage_east = 0.0,
          coverage_north = 0.0;
   FILE* raw = OpenFileForReading(path);
@@ -469,10 +501,8 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
         GetDouble(handle.get(), "longitudeOfLastGridPointInDegrees");
     auto last_lat = GetDouble(handle.get(), "latitudeOfLastGridPointInDegrees");
     if (first_lon && first_lat && last_lon && last_lat) {
-      const double west = std::min(NormalizeLongitude(*first_lon),
-                                   NormalizeLongitude(*last_lon));
-      const double east = std::max(NormalizeLongitude(*first_lon),
-                                   NormalizeLongitude(*last_lon));
+      const auto [west, east] =
+          LongitudeExtent(handle.get(), *first_lon, *last_lon);
       const double south = std::min(*first_lat, *last_lat);
       const double north = std::max(*first_lat, *last_lat);
       Json::Value grid(Json::objectValue);
@@ -480,6 +510,11 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
       grid["south"] = south;
       grid["east"] = east;
       grid["north"] = north;
+      // Keep individual rectangles: a single envelope loses the seam and can
+      // invent overlap in gaps between regional/forecast-extension grids.
+      if (std::find(coverage_regions.begin(), coverage_regions.end(), grid) ==
+          coverage_regions.end())
+        coverage_regions.append(grid);
       if (const auto ni = GetLong(handle.get(), "Ni"))
         grid["ni"] = Json::Int64(*ni);
       if (const auto nj = GetLong(handle.get(), "Nj"))
@@ -491,16 +526,20 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
               GetDouble(handle.get(), "jDirectionIncrementInDegrees"))
         grid["latitude_increment"] = *increment;
       message["grid"] = grid;
+      // The legacy summary remains an ordinary [-180, 180] envelope. Exact
+      // overlap uses regions, whose east may exceed 180 for a wrapped grid.
+      const double envelope_west = east > 180.0 ? -180.0 : west;
+      const double envelope_east = east > 180.0 ? 180.0 : east;
       if (!have_coverage) {
-        coverage_west = west;
+        coverage_west = envelope_west;
         coverage_south = south;
-        coverage_east = east;
+        coverage_east = envelope_east;
         coverage_north = north;
         have_coverage = true;
       } else {
-        coverage_west = std::min(coverage_west, west);
+        coverage_west = std::min(coverage_west, envelope_west);
         coverage_south = std::min(coverage_south, south);
-        coverage_east = std::max(coverage_east, east);
+        coverage_east = std::max(coverage_east, envelope_east);
         coverage_north = std::max(coverage_north, north);
       }
     }
@@ -556,6 +595,7 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
     coverage["south"] = coverage_south;
     coverage["east"] = coverage_east;
     coverage["north"] = coverage_north;
+    coverage["regions"] = coverage_regions;
     result["coverage"] = coverage;
   }
   return result;
@@ -924,10 +964,20 @@ bool RangesOverlap(double first_minimum, double first_maximum,
 
 bool CoverageOverlaps(const Json::Value& first, const Json::Value& second) {
   if (!first.isObject() || !second.isObject()) return false;
-  return RangesOverlap(first["west"].asDouble(), first["east"].asDouble(),
-                       second["west"].asDouble(), second["east"].asDouble()) &&
-         RangesOverlap(first["south"].asDouble(), first["north"].asDouble(),
-                       second["south"].asDouble(), second["north"].asDouble());
+  for (const auto& a : first["regions"]) {
+    for (const auto& b : second["regions"]) {
+      if (!RangesOverlap(a["south"].asDouble(), a["north"].asDouble(),
+                         b["south"].asDouble(), b["north"].asDouble()))
+        continue;
+      for (double shift : {-360.0, 0.0, 360.0}) {
+        if (RangesOverlap(a["west"].asDouble(), a["east"].asDouble(),
+                          b["west"].asDouble() + shift,
+                          b["east"].asDouble() + shift))
+          return true;
+      }
+    }
+  }
+  return false;
 }
 
 bool TimeRangesOverlap(const Json::Value& first, const Json::Value& second) {
