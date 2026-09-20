@@ -8,6 +8,7 @@
 #include <json/json.h>
 
 #include "environmental_grib/geo.h"
+#include "environmental_grib/cancellation.h"
 #include "environmental_grib/weather.h"
 
 namespace environmental_grib {
@@ -54,6 +55,7 @@ struct EnvironmentRequest {
   // Internal extension-mode switch propagated only to a preferred current
   // source which has a configured fallback.
   bool allow_partial_current_coverage{false};
+  ExecutionContext execution;
 };
 
 struct EnvironmentResult {

@@ -707,6 +707,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                                       HttpGet http_get,
                                       std::optional<TimePoint> now,
                                       ProgressCallback progress) {
+  ExecutionScope execution_scope(request.execution);
+  CheckCancellation();
   progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   BuildTimeSequence(request.start, request.hours, request.step_hours);
@@ -925,12 +927,14 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                            "routing",
                            true};
           auto weather_future = std::async(std::launch::async, [&, atmosphere] {
+            ExecutionScope scope(request.execution);
             return GenerateGfs(
                 atmosphere,
                 MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
                 now, progress);
           });
           auto wave_future = std::async(std::launch::async, [&, waves] {
+            ExecutionScope scope(request.execution);
             return GenerateGfs(
                 waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
                 now, progress,

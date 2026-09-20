@@ -1,10 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
-project(environmental_grib_generator VERSION 0.1.11 LANGUAGES CXX)
+project(environmental_grib_generator VERSION 0.1.12 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
 find_package(BZip2 REQUIRED)
-if(WIN32)
+if(WIN32 OR ANDROID)
+  if(ANDROID)
+    # ecCodes' static Android export does not discover these transitive targets.
+    find_package(PNG REQUIRED)
+    find_package(tl-expected CONFIG REQUIRED)
+    find_package(libaec CONFIG REQUIRED)
+  endif()
   # vcpkg's exported CMake targets carry proper MSVC link paths.  Passing its
   # pkg-config -L flags through pkgconfiglite instead makes Visual Studio treat
   # the terminal "lib" directory as an object named lib.obj.
@@ -12,14 +18,34 @@ if(WIN32)
   find_package(jsoncpp CONFIG REQUIRED)
   find_package(netCDF CONFIG REQUIRED)
   find_package(CURL REQUIRED)
+  if(ANDROID)
+    find_package(OpenSSL REQUIRED)
+    # OpenCPN exports an older OpenSSL. Force our complete, hidden TLS stack
+    # into the plugin so the linker cannot resolve half of it against the host.
+    set(ENVIRONMENTAL_GRIB_CURL_TARGET
+      "-Wl,--whole-archive,$<TARGET_FILE:CURL::libcurl>,$<TARGET_FILE:OpenSSL::SSL>,$<TARGET_FILE:OpenSSL::Crypto>,--no-whole-archive"
+      CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+  else()
+    set(ENVIRONMENTAL_GRIB_CURL_TARGET CURL::libcurl)
+  endif()
   find_package(Qhull CONFIG REQUIRED)
   find_package(blosc CONFIG REQUIRED)
+  if(ANDROID)
+    set(ENVIRONMENTAL_GRIB_BLOSC_TARGET blosc_static)
+    # ecCodes 2.48 registers accessors through static initializers. Without
+    # whole-archive, unreferenced accessor objects disappear from a static link.
+    set(ENVIRONMENTAL_GRIB_ECCODES_TARGET
+      "-Wl,--whole-archive,$<TARGET_FILE:eccodes>,--no-whole-archive" eccodes)
+  else()
+    set(ENVIRONMENTAL_GRIB_BLOSC_TARGET blosc_shared)
+    set(ENVIRONMENTAL_GRIB_ECCODES_TARGET eccodes)
+  endif()
   find_package(libzip CONFIG REQUIRED)
   find_package(unofficial-sodium CONFIG REQUIRED)
   find_package(zstd CONFIG REQUIRED)
   set(ENVIRONMENTAL_GRIB_DEPENDENCIES
-    eccodes JsonCpp::JsonCpp netCDF::netcdf CURL::libcurl Qhull::qhull_r
-    blosc_shared libzip::zip unofficial-sodium::sodium zstd::libzstd)
+    ${ENVIRONMENTAL_GRIB_ECCODES_TARGET} JsonCpp::JsonCpp netCDF::netcdf ${ENVIRONMENTAL_GRIB_CURL_TARGET} Qhull::qhull_r
+    ${ENVIRONMENTAL_GRIB_BLOSC_TARGET} libzip::zip unofficial-sodium::sodium zstd::libzstd)
 else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(ECCODES REQUIRED IMPORTED_TARGET eccodes)
@@ -47,8 +73,12 @@ else()
     PkgConfig::QHULL_R PkgConfig::BLOSC PkgConfig::LIBZIP PkgConfig::SODIUM
     PkgConfig::ZSTD)
 endif()
-find_path(PROJ_INCLUDE_DIR proj.h HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES include)
-find_library(PROJ_LIBRARY NAMES proj HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES lib)
+if(ANDROID)
+  find_package(PROJ CONFIG REQUIRED)
+else()
+  find_path(PROJ_INCLUDE_DIR proj.h HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES include)
+  find_library(PROJ_LIBRARY NAMES proj HINTS $ENV{PROJ_ROOT} PATH_SUFFIXES lib)
+endif()
 
 if(MSVC)
   set(ENVIRONMENTAL_GRIB_WINDOWS_UTF8_MANIFEST
@@ -110,19 +140,27 @@ else()
   target_compile_options(environmental_grib_engine PRIVATE
     -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 endif()
-if(PROJ_INCLUDE_DIR AND PROJ_LIBRARY)
+if(ANDROID)
+  target_link_libraries(environmental_grib_engine PUBLIC PROJ::proj)
+  target_compile_definitions(environmental_grib_engine PUBLIC ENVIRONMENTAL_GRIB_HAVE_PROJ=1)
+elseif(PROJ_INCLUDE_DIR AND PROJ_LIBRARY)
   target_include_directories(environmental_grib_engine PRIVATE ${PROJ_INCLUDE_DIR})
   target_link_libraries(environmental_grib_engine PUBLIC ${PROJ_LIBRARY})
   target_compile_definitions(environmental_grib_engine PUBLIC ENVIRONMENTAL_GRIB_HAVE_PROJ=1)
 endif()
 
+if(NOT ANDROID)
 add_executable(environmental-grib src/cli.cpp)
 target_link_libraries(environmental-grib PRIVATE environmental_grib_engine)
 if(MSVC)
   environmental_grib_enable_windows_utf8(environmental-grib)
 endif()
+endif()
 
 if(BUILD_TESTING)
+  add_executable(environmental_grib_cancellation_tests tests/cancellation_tests.cpp)
+  target_link_libraries(environmental_grib_cancellation_tests PRIVATE environmental_grib_engine)
+  add_test(NAME environmental_grib_cancellation_tests COMMAND environmental_grib_cancellation_tests)
   add_executable(environmental_grib_estimate_tests tests/estimate_tests.cpp)
   target_link_libraries(environmental_grib_estimate_tests PRIVATE environmental_grib_engine)
   if(MSVC)
@@ -130,7 +168,7 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME environmental_grib_estimate_tests COMMAND environmental_grib_estimate_tests)
   find_package(Python3 COMPONENTS Interpreter QUIET)
-  if(Python3_Interpreter_FOUND)
+  if(Python3_Interpreter_FOUND AND NOT ANDROID)
     add_test(NAME environmental_grib_size_report_cli_tests
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/size_report_cli_tests.py
               $<TARGET_FILE:environmental-grib>)
@@ -201,6 +239,7 @@ if(BUILD_TESTING)
     COMMAND environmental_grib_concurrency_tests)
 endif()
 
+if(NOT ANDROID)
 install(TARGETS environmental_grib_engine environmental-grib
   EXPORT environmental_grib_targets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -208,3 +247,4 @@ install(TARGETS environmental_grib_engine environmental-grib
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()

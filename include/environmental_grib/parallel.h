@@ -11,6 +11,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include "environmental_grib/cancellation.h"
 
 namespace environmental_grib {
 
@@ -40,13 +41,16 @@ auto ParallelMapOrdered(const std::vector<Input>& inputs,
   std::mutex failure_mutex;
   std::vector<std::thread> workers;
   workers.reserve(worker_count);
+  const auto execution = current_execution;
   try {
     for (std::size_t worker = 0; worker < worker_count; ++worker) {
       workers.emplace_back([&] {
+        ExecutionScope scope(execution);
         while (!failed.load(std::memory_order_acquire)) {
           const std::size_t index = next.fetch_add(1);
           if (index >= inputs.size()) return;
           try {
+            CheckCancellation();
             slots[index].emplace(function(inputs[index]));
           } catch (...) {
             {

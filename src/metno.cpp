@@ -23,6 +23,7 @@
 #include "environmental_grib/grib.h"
 #include "environmental_grib/parallel.h"
 #include "environmental_grib/platform.h"
+#include "environmental_grib/cancellation.h"
 
 namespace environmental_grib {
 namespace {
@@ -35,6 +36,16 @@ void Nc(int status, const std::string& action) {
 class NcFile {
 public:
   explicit NcFile(const std::string& location) {
+#ifdef __ANDROID__
+    // The Android plugin serializes generation jobs and privately links netCDF.
+    // DAP owns its own CURL handle, so it needs the same bundled trust store.
+    if (!current_execution.ca_bundle.empty()) {
+      Nc(nc_rc_set("HTTP.SSL.CAINFO", current_execution.ca_bundle.c_str()),
+         "configuring NetCDF HTTPS certificates");
+      Nc(nc_rc_set("HTTP.TIMEOUT", "60"), "configuring NetCDF network timeout");
+    }
+#endif
+    CheckCancellation();
     Nc(nc_open(location.c_str(), NC_NOWRITE, &id_),
        "opening MET Norway Nordic NetCDF");
   }
