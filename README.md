@@ -8,7 +8,7 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
-Version 0.1.12 combines the global/wrapped-grid correction and Ubuntu 22.04
+Version 0.3.0 combines the global/wrapped-grid correction and Ubuntu 22.04
 compatibility with Android in-process generation, cooperative cancellation,
 isolated TLS linkage and the corrected NOAA GFS mean-sea-level pressure field.
 Desktop command-line behaviour remains available unchanged.
