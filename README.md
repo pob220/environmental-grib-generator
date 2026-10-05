@@ -8,6 +8,14 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Version 0.3.1 adds automatic regional hosted failover for NOAA GFS outages and
+rate limits. It preserves completed timesteps, validates the exact forecast,
+fields, levels, native grid and SHA-256 digest, obeys service `Retry-After`, and
+keeps cancellation responsive. Paired GFS atmosphere/wave jobs share an outage
+flag so they stop starting new NOAA requests after failure. Other providers
+retain their existing retries. The hosted cache currently covers minimal/routing
+weather and the three GFS wave fields; unsupported presets fail explicitly.
+
 Version 0.3.0 combines the global/wrapped-grid correction and Ubuntu 22.04
 compatibility with Android in-process generation, cooperative cancellation,
 isolated TLS linkage and the corrected NOAA GFS mean-sea-level pressure field.

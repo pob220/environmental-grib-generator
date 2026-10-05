@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/gfs_fallback.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/metno.h"
@@ -907,6 +908,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                        false,
                        request.weather_preset,
                        false};
+      probe.noaa_unavailable = std::make_shared<std::atomic<bool>>(false);
       std::vector<std::string> errors;
       bool complete = false;
       for (const auto& candidate : GfsCycleCandidates(probe, now)) {
@@ -926,19 +928,22 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                            false,
                            "routing",
                            true};
+          waves.noaa_unavailable = probe.noaa_unavailable;
           auto weather_future = std::async(std::launch::async, [&, atmosphere] {
             ExecutionScope scope(request.execution);
             return GenerateGfs(
                 atmosphere,
                 MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
-                now, progress);
+                now, progress, {},
+                http_get ? HostedGfsDownload{} : BuiltinHostedGfsDownload());
           });
           auto wave_future = std::async(std::launch::async, [&, waves] {
             ExecutionScope scope(request.execution);
             return GenerateGfs(
                 waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress),
                 now, progress,
-                MakeRetryingHttpGetRange({}, "NOAA GFS Wave", progress));
+                MakeRetryingHttpGetRange({}, "NOAA GFS Wave", progress),
+                http_get ? HostedGfsDownload{} : BuiltinHostedGfsDownload());
           });
           std::optional<WeatherGenerateResult> weather;
           std::optional<WeatherGenerateResult> wave;
@@ -989,7 +994,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
                          false};
       const auto result = GenerateGfs(
           weather, MakeRetryingHttpGet(http_get, "NOAA GFS weather", progress),
-          now, progress);
+          now, progress, {},
+          http_get ? HostedGfsDownload{} : BuiltinHostedGfsDownload());
       streams.emplace_back("weather", result.output);
       selected_cycle = result.cycle.CycleTime();
     }
@@ -1126,7 +1132,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     }
     const auto wave = GenerateGfs(
         waves, MakeRetryingHttpGet(http_get, "NOAA GFS Wave", progress), now,
-        progress, MakeRetryingHttpGetRange({}, "NOAA GFS Wave", progress));
+        progress, MakeRetryingHttpGetRange({}, "NOAA GFS Wave", progress),
+        http_get ? HostedGfsDownload{} : BuiltinHostedGfsDownload());
     streams.emplace_back("waves", wave.output);
     wave_cycle = wave.cycle.CycleTime();
     if (!selected_cycle) selected_cycle = wave.cycle.CycleTime();

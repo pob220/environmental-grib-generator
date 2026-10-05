@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/gfs_fallback.h"
 #include "environmental_grib/ukv.h"
 #include "environmental_grib/grib.h"
 #include "environmental_grib/parallel.h"
@@ -398,12 +399,14 @@ HttpGet MakeRetryingHttpGet(HttpGet download, const std::string& provider,
         DownloadPermit permit;
         return download(url, timeout_seconds);
       } catch (const HttpDownloadError& error) {
-        if (!error.transient() || attempt >= policy.max_attempts) {
+        if (!error.transient() || attempt >= policy.max_attempts ||
+            ((provider == "NOAA GFS weather" || provider == "NOAA GFS Wave") &&
+             IsGfsFailoverError(error))) {
           throw HttpDownloadError(
               provider + " download failed after " + std::to_string(attempt) +
                   (attempt == 1 ? " attempt: " : " attempts: ") + error.what() +
                   " [" + resource + "]",
-              error.transient());
+              error.transient(), error.status(), error.forecast_missing());
         }
         details["state"] = "retrying";
         details["delayMs"] = delay_ms;
@@ -458,7 +461,7 @@ HttpGetRange MakeRetryingHttpGetRange(HttpGetRange download,
                   std::to_string(attempt) +
                   (attempt == 1 ? " attempt: " : " attempts: ") + error.what() +
                   " [" + resource + "]",
-              error.transient());
+              error.transient(), error.status(), error.forecast_missing());
         }
         details["state"] = "retrying";
         details["delayMs"] = delay_ms;
@@ -481,9 +484,12 @@ std::vector<WeatherProvider> ListWeatherProviders() {
   return {
       {"gfs", "NOAA GFS 0.25 degree global forecast", "NOAA NOMADS", "GRIB2",
        "free/no account",
-       "Global Forecast System subsets from the official NOMADS filter."},
+       "Global Forecast System subsets from NOMADS, with automatic hosted "
+       "failover for minimal/routing weather during NOAA outages."},
       {"gfs_wave", "NOAA GFS Wave forecast", "NOAA NOMADS", "GRIB2",
-       "free/no account", "GFS Wave global 0.25 degree subsets from NOMADS."},
+       "free/no account",
+       "GFS Wave subsets from NOMADS, with automatic "
+       "hosted failover during NOAA outages."},
       {"copernicus_global_waves", "Copernicus Marine Global Waves forecast",
        "Copernicus Marine", "NetCDF source, converted to OpenCPN GRIB2",
        "Copernicus Marine account required",
@@ -648,12 +654,17 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
   if (status != CURLE_OK)
     throw HttpDownloadError(
         "HTTP download failed: " + std::string(curl_easy_strerror(status)),
-        TransientCurlError(status));
-  if (response < 200 || response >= 300) {
-    const std::string body(output.begin(), output.end());
-    const bool file_missing =
-        body.find("Data file is not present") != std::string::npos;
-    const bool rate_limited = body.find("Over Rate Limit") != std::string::npos;
+        TransientCurlError(status), -static_cast<long>(status));
+  const bool noaa = url.starts_with("https://nomads.ncep.noaa.gov/");
+  const std::string text(
+      output.begin(),
+      output.begin() + std::min<std::size_t>(output.size(), 8192));
+  const bool rate_limited =
+      noaa && text.find("Over Rate Limit") != std::string::npos;
+  const bool file_missing =
+      text.find("Data file is not present") != std::string::npos;
+  if (response < 200 || response >= 300 || rate_limited ||
+      (noaa && file_missing)) {
     std::string detail;
     if (file_missing)
       detail = ": requested forecast file is not yet available";
@@ -663,7 +674,8 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
         "HTTP download failed with status " + std::to_string(response) + detail,
         rate_limited ||
             (!file_missing && (TransientHttpStatus(response) ||
-                               (response >= 300 && response < 400))));
+                               (response >= 300 && response < 400))),
+        response, file_missing || response == 404);
   }
   return output;
 }
@@ -671,7 +683,8 @@ std::vector<unsigned char> CurlHttpGet(const std::string& url,
 WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
                                   std::optional<TimePoint> now,
                                   ProgressCallback progress,
-                                  HttpGetRange http_get_range) {
+                                  HttpGetRange http_get_range,
+                                  HostedGfsDownload hosted_download) {
   progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
   if (!std::set<int>{1, 3, 6, 12}.contains(request.step_hours))
@@ -709,24 +722,44 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
     throw ValidationError(
         "output already exists; enable overwrite to replace it");
   const bool using_builtin_http = !http_get;
+  if (!hosted_download && using_builtin_http)
+    hosted_download = BuiltinHostedGfsDownload();
   if (!http_get) http_get = CurlHttpGet;
   if (!http_get_range && using_builtin_http) http_get_range = CurlHttpGetRange;
   std::vector<std::vector<unsigned char>> segments;
   std::vector<std::string> urls, errors;
   std::optional<GFSCycle> selected;
+  bool used_hosted = false;
+  auto noaa_unavailable = request.noaa_unavailable
+                              ? request.noaa_unavailable
+                              : std::make_shared<std::atomic<bool>>(false);
   struct DownloadedHour {
     int hour{};
     std::string url;
     std::vector<unsigned char> bytes;
   };
   auto download_filtered = [&](const GFSCycle& cycle, int hour) {
+    if (hosted_download && noaa_unavailable->load())
+      throw HttpDownloadError(
+          "NOAA GFS is unavailable for this job; using hosted data", true);
     const auto url = url_for(cycle, hour);
     Json::Value details;
     details["cycle"] = cycle.CycleTime();
     details["hour"] = hour;
     Progress(progress, "downloading forecast hour", details);
-    auto bytes = http_get(url, request.timeout_seconds);
-    ValidateDownloaded(bytes, request.waves ? "GFS Wave" : "GFS");
+    std::vector<unsigned char> bytes;
+    try {
+      bytes = http_get(url, request.timeout_seconds);
+      try {
+        ValidateDownloaded(bytes, request.waves ? "GFS Wave" : "GFS");
+      } catch (const ValidationError& error) {
+        throw HttpDownloadError(error.what(), true, 200);
+      }
+    } catch (const HttpDownloadError& error) {
+      if (hosted_download && IsGfsFailoverError(error))
+        noaa_unavailable->store(true);
+      throw;
+    }
     return DownloadedHour{hour, url, std::move(bytes)};
   };
   auto download_indexed_wave = [&](const GFSCycle& cycle, int hour) {
@@ -779,25 +812,27 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
     Progress(progress, "downloaded NOAA GFS Wave indexed fields", details);
     return DownloadedHour{hour, file_url, std::move(combined)};
   };
-  auto download_cycle = [&](const GFSCycle& cycle, const auto& download) {
+  auto download_cycle = [&](const GFSCycle& cycle, const auto& download,
+                            std::vector<DownloadedHour>& downloaded) {
     // Probe the furthest required forecast hour before starting concurrent
     // transfers.  A publishing cycle which cannot cover the requested window
     // is rejected with one request instead of a burst for every early hour.
-    std::vector<DownloadedHour> downloaded;
     downloaded.push_back(download(cycle, hours.back()));
     if (hours.size() > 1) {
       std::vector<int> remaining(hours.begin(), hours.end() - 1);
-      auto rest = ParallelMapOrdered(
-          remaining, kDefaultDownloadConcurrency,
-          [&](const int& hour) { return download(cycle, hour); });
-      downloaded.insert(downloaded.end(), std::make_move_iterator(rest.begin()),
-                        std::make_move_iterator(rest.end()));
+      std::mutex ready_mutex;
+      ParallelMapOrdered(remaining, kDefaultDownloadConcurrency,
+                         [&](const int& hour) {
+                           auto item = download(cycle, hour);
+                           std::lock_guard lock(ready_mutex);
+                           downloaded.push_back(std::move(item));
+                           return hour;
+                         });
     }
     std::sort(downloaded.begin(), downloaded.end(),
               [](const auto& left, const auto& right) {
                 return left.hour < right.hour;
               });
-    return downloaded;
   };
   for (const auto& cycle : cycles) {
     try {
@@ -805,23 +840,65 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
       urls.clear();
       std::vector<DownloadedHour> downloaded;
       try {
-        downloaded = download_cycle(cycle, download_filtered);
+        download_cycle(cycle, download_filtered, downloaded);
       } catch (const ValidationError& filter_error) {
-        if (!request.waves || !http_get_range) throw;
-        Json::Value details;
-        details["cycle"] = cycle.CycleTime();
-        details["reason"] = filter_error.what();
-        details["scope"] = "global selected fields";
-        Progress(progress, "NOAA wave subset unavailable; using indexed data",
-                 details);
-        try {
-          downloaded = download_cycle(cycle, download_indexed_wave);
-        } catch (const ValidationError& indexed_error) {
-          throw ValidationError(
-              std::string("NOAA wave subset failed: ") + filter_error.what() +
-              "; indexed fallback failed: " + indexed_error.what());
+        const auto* http_error =
+            dynamic_cast<const HttpDownloadError*>(&filter_error);
+        if (hosted_download && http_error && IsGfsFailoverError(*http_error)) {
+          std::vector<int> remaining;
+          for (int hour : hours)
+            if (std::none_of(downloaded.begin(), downloaded.end(),
+                             [&](const DownloadedHour& item) {
+                               return item.hour == hour;
+                             }))
+              remaining.push_back(hour);
+          Json::Value details;
+          details["cycle"] = cycle.CycleTime();
+          details["reason"] = filter_error.what();
+          details["provider"] = request.waves ? "GFS waves" : "GFS weather";
+          details["retainedTimesteps"] = static_cast<int>(downloaded.size());
+          Progress(progress,
+                   "NOAA unavailable; switching to hosted GFS regional service",
+                   details);
+          try {
+            auto data = hosted_download(request, cycle, remaining, progress);
+            for (auto& [hour, bytes] :
+                 ValidateHostedGfsBytes(data, request, cycle, remaining))
+              downloaded.push_back(
+                  {hour, std::string(kGfsFallbackOrigin) + "/v1/subsets",
+                   std::move(bytes)});
+          } catch (const HostedGfsCoverageUnavailable&) {
+            throw;
+          } catch (const Error& error) {
+            throw HostedGfsServiceError(
+                std::string("NOAA GFS failed: ") + filter_error.what() +
+                "; hosted failover failed: " + error.what());
+          }
+          used_hosted = true;
+        } else {
+          if (!request.waves || !http_get_range ||
+              (http_error && http_error->forecast_missing()))
+            throw;
+          Json::Value details;
+          details["cycle"] = cycle.CycleTime();
+          details["reason"] = filter_error.what();
+          details["scope"] = "global selected fields";
+          Progress(progress, "NOAA wave subset unavailable; using indexed data",
+                   details);
+          try {
+            downloaded.clear();
+            download_cycle(cycle, download_indexed_wave, downloaded);
+          } catch (const ValidationError& indexed_error) {
+            throw ValidationError(
+                std::string("NOAA wave subset failed: ") + filter_error.what() +
+                "; indexed fallback failed: " + indexed_error.what());
+          }
         }
       }
+      std::sort(downloaded.begin(), downloaded.end(),
+                [](const auto& left, const auto& right) {
+                  return left.hour < right.hour;
+                });
       for (auto& item : downloaded) {
         urls.push_back(std::move(item.url));
         segments.push_back(std::move(item.bytes));
@@ -853,19 +930,24 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
     const auto scan = ScanGribMessages(temporary);
     const auto inspection = InspectGrib(temporary);
     std::filesystem::rename(temporary, request.output);
-    return {request.waves ? "gfs_wave" : "gfs",
-            request.waves ? "NOAA GFS Wave forecast via NOMADS"
-                          : "NOAA GFS 0.25 degree forecast via NOMADS",
-            request.waves ? "gfswave_global_0p25" : "gfs_0p25",
-            *selected,
-            request.bbox,
-            hours,
-            request.output,
-            scan.byte_count,
-            scan.message_count,
-            inspection,
-            urls,
-            fields};
+    return {
+        request.waves ? "gfs_wave" : "gfs",
+        used_hosted
+            ? (request.waves
+                   ? "NOAA GFS Wave forecast via hosted AWS failover"
+                   : "NOAA GFS 0.25 degree forecast via hosted AWS failover")
+            : (request.waves ? "NOAA GFS Wave forecast via NOMADS"
+                             : "NOAA GFS 0.25 degree forecast via NOMADS"),
+        request.waves ? "gfswave_global_0p25" : "gfs_0p25",
+        *selected,
+        request.bbox,
+        hours,
+        request.output,
+        scan.byte_count,
+        scan.message_count,
+        inspection,
+        urls,
+        fields};
   } catch (...) {
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);

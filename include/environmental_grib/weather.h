@@ -1,8 +1,10 @@
 #pragma once
 
 #include <filesystem>
+#include <atomic>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,6 +45,8 @@ struct GFSRequest {
   bool dry_run{false};
   std::string preset{"routing"};
   bool waves{false};
+  // Shared only by GFS atmosphere/waves in one generation job.
+  std::shared_ptr<std::atomic<bool>> noaa_unavailable;
 };
 
 struct WeatherGenerateResult {
@@ -66,6 +70,10 @@ using HttpGetRange = std::function<std::vector<unsigned char>(
     const std::string&, std::size_t, std::size_t, double)>;
 using ProgressCallback =
     std::function<void(const std::string&, const Json::Value&)>;
+
+using HostedGfsDownload = std::function<std::vector<unsigned char>(
+    const GFSRequest&, const GFSCycle&, const std::vector<int>&,
+    ProgressCallback)>;
 
 ProgressCallback SynchronizedProgressCallback(ProgressCallback progress);
 void EnsureHttpInitialized();
@@ -108,7 +116,8 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request,
                                   HttpGet http_get = {},
                                   std::optional<TimePoint> now = std::nullopt,
                                   ProgressCallback progress = {},
-                                  HttpGetRange http_get_range = {});
+                                  HttpGetRange http_get_range = {},
+                                  HostedGfsDownload hosted_download = {});
 std::vector<int> DwdIconEuForecastHourSequence(int hours, int step_hours);
 std::map<std::string, std::string> DwdIconEuFieldsForPreset(
     const std::string& preset);
