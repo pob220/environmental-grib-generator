@@ -207,7 +207,8 @@ int main(int argc, char** argv) {
     for (int hour : {0, 3, 6})
       for (const auto& field : {"swh", "perpw", "dirpw"})
         wave_fields.push_back(
-            {hour, field, std::vector<double>(grid.size(), 1.0), {}});
+            {hour, field, std::vector<double>(grid.size(), 1.0), {},
+             "surface", 0});
     eg::WriteRegularLatLonGrib2(grid,
                                 eg::ParseUtcDateTime("2026-10-04T12:00:00Z"),
                                 wave_fields, root / "wave-fixture.grib2");
