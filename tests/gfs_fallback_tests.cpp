@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
     auto fixture = [&](const std::vector<int>& hours,
                        eg::GFSCycle reference = eg::GFSCycle{"20261004", "12"},
                        double west = -1) {
-      const auto grid = eg::BuildRegularGrid({west, 51, west + .75, 52}, .25);
+      const auto grid = eg::BuildRegularGrid({west, 51, west + 1, 52}, .25);
       std::vector<eg::Grib2Field> fields;
       for (int hour : hours)
         for (const auto& name : {"10u", "10v"})
@@ -206,9 +206,12 @@ int main(int argc, char** argv) {
     std::vector<eg::Grib2Field> wave_fields;
     for (int hour : {0, 3, 6})
       for (const auto& field : {"swh", "perpw", "dirpw"})
-        wave_fields.push_back(
-            {hour, field, std::vector<double>(grid.size(), 1.0), {},
-             "surface", 0});
+        wave_fields.push_back({hour,
+                               field,
+                               std::vector<double>(grid.size(), 1.0),
+                               {},
+                               "surface",
+                               0});
     eg::WriteRegularLatLonGrib2(grid,
                                 eg::ParseUtcDateTime("2026-10-04T12:00:00Z"),
                                 wave_fields, root / "wave-fixture.grib2");

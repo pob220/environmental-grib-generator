@@ -182,8 +182,11 @@ std::map<int, std::vector<unsigned char>> ValidateHostedGfsBytes(
   const double east = request.bbox.east > request.bbox.west
                           ? request.bbox.east
                           : request.bbox.east + 360;
-  const long columns = static_cast<long>(
-      std::ceil(east * 4 - 1e-8) - std::ceil(request.bbox.west * 4 - 1e-8));
+  const long columns = std::min(
+      1440L,
+      static_cast<long>((request.waves ? std::ceil(east * 4 - 1e-8)
+                                       : std::floor(east * 4 + 1e-8) + 1) -
+                        std::ceil(request.bbox.west * 4 - 1e-8)));
   const double south = std::ceil(request.bbox.south * 4 - 1e-8) / 4;
   const double north = std::floor(request.bbox.north * 4 + 1e-8) / 4;
   const long rows = static_cast<long>(std::llround((north - south) * 4)) + 1;
