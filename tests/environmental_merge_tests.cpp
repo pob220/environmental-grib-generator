@@ -432,6 +432,14 @@ int main(int argc, char** argv) {
   const auto time_result = eg::MergeEnvironmentalGribs(incompatible_time);
   Check(!time_result.success && !time_result.errors.empty(),
         "non-overlapping valid-time inputs are rejected");
+  const auto& timing_error = time_result.errors.front();
+  Check(timing_error.find("Weather: ") != std::string::npos &&
+            timing_error.find("currents: ") != std::string::npos &&
+            timing_error.find("20260712T0900") != std::string::npos &&
+            timing_error.find("20260712T1200") != std::string::npos &&
+            timing_error.find("Increase weather duration") != std::string::npos &&
+            timing_error.find("current start time") != std::string::npos,
+        "time-overlap rejection includes UTC ranges and actionable guidance");
 
   Json::Value manifest(Json::objectValue);
   manifest["schema"] = "xgrib-deterministic-fixtures-v1";

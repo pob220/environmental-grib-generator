@@ -103,7 +103,8 @@ void RewriteGrib(const std::filesystem::path& input, const std::filesystem::path
 // A spatially chunked global ARCO store, including direction values 359/1.
 struct ArcoFixture {
   eg::ArcoDataset dataset;
-  ArcoFixture() {
+  bool padded;
+  ArcoFixture(bool padded_chunks = true) : padded(padded_chunks) {
     dataset.dataset_id = "fixture"; dataset.service_url = "https://test.invalid/store";
     auto& asset = dataset.item["assets"]["timeChunked"]; asset["href"] = dataset.service_url;
     for (const auto& variable : {"uo","vo","VHM0","VTPK","VMDR"}) {
@@ -114,7 +115,7 @@ struct ArcoFixture {
       for (const auto& name : {"time","latitude","longitude"}) {
         auto& dim = asset["viewDims"][name]; auto& coords = dim["coords"];
         coords["type"] = "minMaxStep";
-        if (name == std::string("longitude")) { coords["min"]=-180; coords["step"]=45; coords["len"]=8; dim["chunkLen"][variable]=4; }
+        if (name == std::string("longitude")) { coords["min"]=-180; coords["step"]=45; coords["len"]=8; dim["chunkLen"][variable]=3; }
         else if (name == std::string("latitude")) { coords["min"]=-1; coords["step"]=1; coords["len"]=3; dim["chunkLen"][variable]=3; }
         else { coords["min"]=Json::Int64(start.time_since_epoch().count()*1000); coords["step"]=10800000; coords["len"]=3; dim["chunkLen"][variable]=1; }
       }
@@ -136,9 +137,10 @@ struct ArcoFixture {
     auto suffix=url.substr(url.rfind('/')+1); suffix=suffix.substr(0,suffix.find('?'));
     const int chunk=std::stoi(suffix.substr(suffix.rfind('.')+1));
     std::vector<float> data;
-    for (int y=0;y<3;++y) for (int x=0;x<4;++x) {
-      const int column=chunk*4+x; const double l=-180+column*45;
-      data.push_back(variable=="uo" ? 2+std::cos(l*pi/180) : variable=="vo" ? .5 : variable=="VHM0" ? 2 : variable=="VTPK" ? 8 : column==0 ? 359 : 1);
+    const int columns = padded ? 3 : std::min(3,8-chunk*3);
+    for (int y=0;y<3;++y) for (int x=0;x<columns;++x) {
+      const int column=chunk*3+x; const double l=-180+column*45;
+      data.push_back(column >= 8 ? -9999 : variable=="uo" ? 2+std::cos(l*pi/180) : variable=="vo" ? .5 : variable=="VHM0" ? 2 : variable=="VTPK" ? 8 : column==0 ? 359 : 1);
     }
     std::vector<unsigned char> encoded(data.size()*sizeof(float)+BLOSC_MAX_OVERHEAD);
     const int size=blosc_compress_ctx(5,1,sizeof(float),data.size()*sizeof(float),data.data(),encoded.data(),encoded.size(),"blosclz",0,1);
@@ -178,6 +180,15 @@ int main(int argc,char** argv) {
       const auto wave=root/("netcdf-waves-"+std::to_string(currents.size())+".grb2");
       eg::ConvertCopernicusWaveNetCDF(file,box,start,0,3,wave,.25,true);
       CheckContinuous(wave,3);
+    }
+    for (bool padded : {false,true}) {
+      ArcoFixture boundary(padded);
+      const auto data=eg::ReadArcoFields(boundary.dataset,{"uo"},box,{start},grid,"fixture",
+          [&](const auto& url,double timeout) { return boundary.Download(url,timeout); });
+      Check(data.at("uo")[0].mask.empty(),"padded/clipped ARCO boundary chunk retains both halves");
+      for (std::size_t y=0;y<grid.ny();++y) for (std::size_t x=0;x<grid.nx();++x)
+        Check(std::abs(data.at("uo")[0].values[y*grid.nx()+x]-data.at("uo")[0].values[x])<1e-7,
+              "ARCO boundary row strides preserve nonconstant values");
     }
     ArcoFixture arco;
     const auto fetch=[&](const std::string& url,double timeout) { return arco.Download(url,timeout); };

@@ -1294,7 +1294,11 @@ EnvironmentalMergeResult MergeEnvironmentalGribs(
           "weather and current GRIB geographic coverage does not overlap");
     if (!TimeRangesOverlap(weather, current))
       result.errors.emplace_back(
-          "weather and current GRIB valid-time ranges do not overlap");
+          "weather and current GRIB valid-time ranges do not overlap. Weather: " +
+          weather["first_valid_time"].asString() + " to " + weather["last_valid_time"].asString() +
+          " UTC; currents: " + current["first_valid_time"].asString() + " to " +
+          current["last_valid_time"].asString() +
+          " UTC. Increase weather duration or adjust the current start time to obtain a common period.");
     const auto& weather_times = weather["valid_times"];
     const auto& current_times = current["valid_times"];
     if (weather_times != current_times)

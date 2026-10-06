@@ -300,10 +300,33 @@ private:
                                              {"longitude", lon_count},
                                              {"elevation", elevation_count},
                                              {"depth", elevation_count}};
+    // Zarr v2 stores boundary chunks at their nominal (padded) shape.
+    // Some older ARCO stores use clipped boundary chunks instead. Infer the
+    // layout from the exact decoded byte count, never from axis bounds alone.
+    const auto& raw = found->second;
+    const std::size_t item_size = dtype_ == "<i2" ? 2 : dtype_ == "<f4" ? 4 : 0;
+    if (!item_size) throw ValidationError("unsupported ARCO dtype: " + dtype_);
+    const std::map<std::string, std::size_t> nominal{
+        {"time", time_.chunk}, {"latitude", latitude_.chunk},
+        {"longitude", longitude_.chunk},
+        {"elevation", elevation_ ? elevation_->chunk : 1},
+        {"depth", elevation_ ? elevation_->chunk : 1}};
+    const auto byte_count = [&](const auto& shape) {
+      std::size_t bytes = item_size;
+      for (const auto& dimension : dimensions_) {
+        const auto count = shape.at(dimension);
+        if (!count || bytes > std::numeric_limits<std::size_t>::max() / count)
+          throw ValidationError("invalid ARCO chunk dimensions");
+        bytes *= count;
+      }
+      return bytes;
+    };
+    if (raw.size() == byte_count(nominal)) sizes = nominal;
+    else if (raw.size() != byte_count(sizes))
+      throw ValidationError("ARCO decoded chunk size does not match its dimensions");
     std::size_t flat = 0;
     for (const auto& dimension : dimensions_)
-      flat = flat * sizes[dimension] + local[dimension];
-    const auto& raw = found->second;
+      flat = flat * sizes.at(dimension) + local.at(dimension);
     double value = 0.0;
     if (dtype_ == "<i2") {
       if ((flat + 1) * 2 > raw.size())
