@@ -133,22 +133,27 @@ std::pair<double, double> Range(const std::vector<double>& values) {
   return {*minimum, *maximum};
 }
 
-double DisplayLongitude(double value, bool source_360) {
-  if (!source_360) return value;
-  double result = std::fmod(value + 180.0, 360.0);
-  if (result < 0.0) result += 360.0;
-  return result - 180.0;
+BoundingBox SourceCoverage(const std::vector<double>& latitudes,
+                           const std::vector<double>& longitudes) {
+  const auto axis = OrderLongitudeAxis(longitudes);
+  const auto [south, north] = Range(latitudes);
+  if (axis.cyclic) return {-180.0, south, 180.0, north};
+  return {Longitude180(axis.coordinates.front()), south,
+          Longitude180(axis.coordinates.back()), north};
 }
 
-double SourceLongitude(double value, bool source_360) {
-  double result = source_360 ? std::fmod(value, 360.0) : value;
-  if (source_360 && result < 0.0) result += 360.0;
-  return result;
-}
-
-bool IsSource360(const std::vector<double>& longitudes) {
-  const auto [minimum, maximum] = Range(longitudes);
-  return minimum >= 0.0 && maximum > 180.0;
+void RequireCoverage(const BoundingBox& bbox, const std::vector<double>& latitudes,
+                     const std::vector<double>& longitudes, double tolerance) {
+  auto coverage = SourceCoverage(latitudes, longitudes);
+  if (bbox.south < coverage.south - tolerance || bbox.north > coverage.north + tolerance)
+    throw ValidationError("requested bbox latitude range is outside source; use clipping or an inset bbox");
+  if (coverage.Width() < 360.0) {
+    coverage.west = Longitude180(coverage.west - tolerance);
+    coverage.east = Longitude180(coverage.east + tolerance);
+    coverage.south = bbox.south; coverage.north = bbox.north;
+    if (!coverage.Contains(bbox))
+      throw ValidationError("requested bbox longitude range is outside source; use clipping or an inset bbox");
+  }
 }
 
 double RegularSpacing(const std::vector<double>& sorted, const std::string& label,
@@ -247,6 +252,7 @@ struct Field2D {
   std::vector<double> values;
   std::vector<std::uint8_t> mask;
   std::string units;
+  bool cyclic{};
 };
 
 Field2D ReadField(int file, int variable, const Spec& spec,
@@ -304,16 +310,19 @@ Field2D ReadField(int file, int variable, const Spec& spec,
       }
     }
   }
-  if (field.longitudes.front() > field.longitudes.back()) {
-    std::reverse(field.longitudes.begin(), field.longitudes.end());
-    for (std::size_t y = 0; y < field.latitudes.size(); ++y) {
-      for (std::size_t x = 0; x < field.longitudes.size() / 2; ++x) {
-        const std::size_t other = field.longitudes.size() - 1 - x;
-        std::swap(field.values[y * field.longitudes.size() + x], field.values[y * field.longitudes.size() + other]);
-        std::swap(field.mask[y * field.longitudes.size() + x], field.mask[y * field.longitudes.size() + other]);
-      }
+  const auto axis = OrderLongitudeAxis(field.longitudes);
+  auto original_values = std::move(field.values);
+  auto original_mask = std::move(field.mask);
+  const auto original_nx = field.longitudes.size();
+  field.longitudes = axis.coordinates;
+  field.cyclic = axis.cyclic;
+  field.values.resize(field.latitudes.size() * axis.indices.size());
+  field.mask.resize(field.values.size());
+  for (std::size_t y = 0; y < field.latitudes.size(); ++y)
+    for (std::size_t x = 0; x < axis.indices.size(); ++x) {
+      field.values[y * axis.indices.size() + x] = original_values[y * original_nx + axis.indices[x]];
+      field.mask[y * axis.indices.size() + x] = original_mask[y * original_nx + axis.indices[x]];
     }
-  }
   return field;
 }
 
@@ -343,17 +352,37 @@ Bracket FindBracket(const std::vector<double>& coordinates, double value) {
 }
 
 std::pair<double, bool> Interpolate(const Field2D& field, double latitude,
-                                    double longitude) {
+                                    double longitude, double period = 0.0) {
   const auto y = FindBracket(field.latitudes, latitude);
-  const auto x = FindBracket(field.longitudes, longitude);
+  longitude = UnwrapLongitude(longitude, field.longitudes.front());
+  auto x = FindBracket(field.longitudes, longitude);
+  if (!x.valid && field.cyclic && longitude > field.longitudes.back()) {
+    const double width = field.longitudes.front() + 360.0 - field.longitudes.back();
+    x = {field.longitudes.size() - 1, 0,
+         (longitude - field.longitudes.back()) / width, true};
+  }
   if (!x.valid || !y.valid) return {0.0, false};
   const std::size_t nx = field.longitudes.size();
   const std::array<std::size_t, 4> indices{y.low * nx + x.low, y.low * nx + x.high,
                                           y.high * nx + x.low, y.high * nx + x.high};
-  for (auto index : indices) if (field.mask[index]) return {0.0, false};
-  const double lower = field.values[indices[0]] * (1.0 - x.fraction) + field.values[indices[1]] * x.fraction;
-  const double upper = field.values[indices[2]] * (1.0 - x.fraction) + field.values[indices[3]] * x.fraction;
-  return {lower * (1.0 - y.fraction) + upper * y.fraction, true};
+  const std::array<double, 4> weights{(1-x.fraction)*(1-y.fraction), x.fraction*(1-y.fraction),
+                                     (1-x.fraction)*y.fraction, x.fraction*y.fraction};
+  double value = 0.0, sine = 0.0, cosine = 0.0;
+  constexpr double pi = 3.14159265358979323846;
+  for (std::size_t i = 0; i < indices.size(); ++i) {
+    if (weights[i] <= 1e-12) continue;
+    if (field.mask[indices[i]]) return {0.0, false};
+    if (period > 0.0) {
+      const double angle = field.values[indices[i]] * 2*pi/period;
+      sine += weights[i]*std::sin(angle); cosine += weights[i]*std::cos(angle);
+    } else value += weights[i]*field.values[indices[i]];
+  }
+  if (period > 0.0) {
+    if (std::hypot(sine, cosine) < 1e-12) return {0.0, false};
+    value = std::atan2(sine, cosine) * period/(2*pi);
+    if (value < 0.0) value += period;
+  }
+  return {value, true};
 }
 
 }  // namespace
@@ -370,19 +399,27 @@ BoundingBox NetCDFCurrentSource::SourceBounds() const {
   const auto spec = DetectSpec(file.id(), options_);
   auto latitudes = ReadCoordinate(file.id(), spec.lat);
   auto longitudes = ReadCoordinate(file.id(), spec.lon);
-  const bool source_360 = IsSource360(longitudes);
-  for (double& value : longitudes) value = DisplayLongitude(value, source_360);
-  const auto [south, north] = Range(latitudes);
-  const auto [west, east] = Range(longitudes);
-  return {west, south, east, north};
+  return SourceCoverage(latitudes, longitudes);
 }
 
 BoundingBox NetCDFCurrentSource::ClipBboxToSource(const BoundingBox& bbox) const {
   const auto source = SourceBounds();
-  BoundingBox clipped{std::max(bbox.west, source.west), std::max(bbox.south, source.south),
-                      std::min(bbox.east, source.east), std::min(bbox.north, source.north)};
-  clipped.Validate();
-  return clipped;
+  if (source.Width() >= 360.0) {
+    BoundingBox clipped{bbox.west, std::max(bbox.south, source.south), bbox.east,
+                        std::min(bbox.north, source.north)};
+    clipped.Validate(); return clipped;
+  }
+  std::vector<std::pair<double, double>> intervals;
+  for (double shift : {-360.0, 0.0, 360.0}) {
+    double west = std::max(bbox.west, source.west + shift);
+    double east = std::min(bbox.UnwrappedEast(), source.UnwrappedEast() + shift);
+    if (east > west) intervals.emplace_back(west, east);
+  }
+  if (intervals.size() != 1)
+    throw ValidationError("source clipping has no connected longitude intersection");
+  BoundingBox clipped{Longitude180(intervals[0].first), std::max(bbox.south, source.south),
+                      Longitude180(intervals[0].second), std::min(bbox.north, source.north)};
+  clipped.Validate(); return clipped;
 }
 
 RegularGrid NetCDFCurrentSource::BuildSourceGrid(const BoundingBox& bbox) const {
@@ -390,10 +427,11 @@ RegularGrid NetCDFCurrentSource::BuildSourceGrid(const BoundingBox& bbox) const 
   const auto spec = DetectSpec(file.id(), options_);
   auto latitudes = ReadCoordinate(file.id(), spec.lat);
   auto longitudes = ReadCoordinate(file.id(), spec.lon);
-  const bool source_360 = IsSource360(longitudes);
-  for (double& value : longitudes) value = DisplayLongitude(value, source_360);
+  auto axis = OrderLongitudeAxis(longitudes);
+  longitudes = axis.coordinates;
+  for (double& value : longitudes) value = UnwrapLongitude(value, bbox.west);
   std::erase_if(latitudes, [&](double value) { return value < bbox.south || value > bbox.north; });
-  std::erase_if(longitudes, [&](double value) { return value < bbox.west || value > bbox.east; });
+  std::erase_if(longitudes, [&](double value) { return value < bbox.west || value > bbox.UnwrappedEast(); });
   std::sort(latitudes.begin(), latitudes.end());
   std::sort(longitudes.begin(), longitudes.end());
   if (latitudes.size() < 2 || longitudes.size() < 2) throw ValidationError("source grid selection must contain at least two latitude and longitude points");
@@ -410,13 +448,7 @@ CurrentGrid NetCDFCurrentSource::GetCurrentGrid(const BoundingBox& bbox,
   const auto spec = DetectSpec(file.id(), options_);
   auto source_lats = ReadCoordinate(file.id(), spec.lat);
   auto source_lons = ReadCoordinate(file.id(), spec.lon);
-  const bool source_360 = IsSource360(source_lons);
-  auto display_lons = source_lons;
-  for (double& value : display_lons) value = DisplayLongitude(value, source_360);
-  const auto [lat_min, lat_max] = Range(source_lats);
-  const auto [lon_min, lon_max] = Range(display_lons);
-  if (bbox.south < lat_min - options_.coverage_tolerance_deg || bbox.north > lat_max + options_.coverage_tolerance_deg) throw ValidationError("requested bbox latitude range is outside source; use clipping or an inset bbox");
-  if (bbox.west < lon_min - options_.coverage_tolerance_deg || bbox.east > lon_max + options_.coverage_tolerance_deg) throw ValidationError("requested bbox longitude range is outside source; use clipping or an inset bbox");
+  RequireCoverage(bbox, source_lats, source_lons, options_.coverage_tolerance_deg);
   const std::size_t time_index = SelectTime(ReadTimes(file.id(), spec), time, options_.nearest_time);
   auto u = ReadField(file.id(), spec.u, spec, time_index, options_);
   auto v = ReadField(file.id(), spec.v, spec, time_index, options_);
@@ -426,7 +458,7 @@ CurrentGrid NetCDFCurrentSource::GetCurrentGrid(const BoundingBox& bbox,
                      std::vector<std::uint8_t>(grid.size())};
   for (std::size_t y = 0; y < grid.ny(); ++y) {
     for (std::size_t x = 0; x < grid.nx(); ++x) {
-      const double target_lon = SourceLongitude(grid.longitudes[x], source_360);
+      const double target_lon = grid.longitudes[x];
       const auto [u_value, u_valid] = Interpolate(u, grid.latitudes[y], target_lon);
       const auto [v_value, v_valid] = Interpolate(v, grid.latitudes[y], target_lon);
       const std::size_t index = y * grid.nx() + x;
@@ -490,15 +522,7 @@ std::vector<NetCDFScalarField> ReadNetCDFScalarFields(
   const auto source_times = ReadTimes(file.id(), spec);
   auto source_lats = ReadCoordinate(file.id(), lat_id);
   auto source_lons = ReadCoordinate(file.id(), lon_id);
-  const bool source_360 = IsSource360(source_lons);
-  auto display_lons = source_lons;
-  for (double& value : display_lons) value = DisplayLongitude(value, source_360);
-  const auto [lat_min, lat_max] = Range(source_lats);
-  const auto [lon_min, lon_max] = Range(display_lons);
-  if (bbox.south < lat_min - 0.02 || bbox.north > lat_max + 0.02 ||
-      bbox.west < lon_min - 0.02 || bbox.east > lon_max + 0.02) {
-    throw ValidationError("requested scalar-field bbox is outside NetCDF coverage");
-  }
+  RequireCoverage(bbox, source_lats, source_lons, 0.02);
   std::map<std::string, std::pair<int, std::string>> variables;
   for (const auto& [name, candidates] : aliases) {
     std::optional<std::pair<int, std::string>> found;
@@ -521,7 +545,8 @@ std::vector<NetCDFScalarField> ReadNetCDFScalarFields(
       for (std::size_t y = 0; y < grid.ny(); ++y) {
         for (std::size_t x = 0; x < grid.nx(); ++x) {
           const auto [value, valid] = Interpolate(
-              field, grid.latitudes[y], SourceLongitude(grid.longitudes[x], source_360));
+              field, grid.latitudes[y], grid.longitudes[x],
+              name == "dirpw" ? (field.units.find("rad") != std::string::npos ? 2*3.14159265358979323846 : 360.0) : 0.0);
           const auto index = y * grid.nx() + x;
           output.values[index] = valid ? value : 0.0;
           output.mask[index] = !valid;

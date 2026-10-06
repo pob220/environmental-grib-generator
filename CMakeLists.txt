@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(environmental_grib_generator VERSION 0.3.1 LANGUAGES CXX)
+project(environmental_grib_generator VERSION 0.3.2 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -219,6 +219,16 @@ if(BUILD_TESTING)
   endif()
   set(ENVIRONMENTAL_GRIB_FIXTURE_DIR
     "${CMAKE_BINARY_DIR}/functional-fixtures")
+  add_executable(environmental_grib_dateline_tests
+    tests/dateline_tests.cpp tests/xtd_test_support.cpp)
+  target_link_libraries(environmental_grib_dateline_tests PRIVATE environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_dateline_tests)
+  endif()
+  add_test(NAME environmental_grib_dateline_tests
+    COMMAND environmental_grib_dateline_tests ${ENVIRONMENTAL_GRIB_FIXTURE_DIR})
+  set_tests_properties(environmental_grib_dateline_tests PROPERTIES
+    FIXTURES_SETUP environmental_grib_dateline_fixture)
   add_test(NAME environmental_grib_merge_tests
     COMMAND environmental_grib_merge_tests ${ENVIRONMENTAL_GRIB_FIXTURE_DIR})
   set_tests_properties(environmental_grib_merge_tests PROPERTIES

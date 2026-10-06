@@ -595,7 +595,7 @@ std::string BuildGfsFilterUrl(
        "gfs.t" + cycle.cycle + "z.pgrb2.0p25.f" + FormatHour(forecast_hour)},
       {"subregion", ""},
       {"leftlon", FormatNumber(bbox.west)},
-      {"rightlon", FormatNumber(bbox.east)},
+      {"rightlon", FormatNumber(bbox.UnwrappedEast())},
       {"toplat", FormatNumber(bbox.north)},
       {"bottomlat", FormatNumber(bbox.south)}};
   query.insert(query.end(), fields.begin(), fields.end());
@@ -612,7 +612,7 @@ std::string BuildGfsWaveFilterUrl(const GFSCycle& cycle, int forecast_hour,
        "gfswave.t" + cycle.cycle + "z.global.0p25.f" + hour.str() + ".grib2"},
       {"subregion", ""},
       {"leftlon", FormatNumber(bbox.west)},
-      {"rightlon", FormatNumber(bbox.east)},
+      {"rightlon", FormatNumber(bbox.UnwrappedEast())},
       {"toplat", FormatNumber(bbox.north)},
       {"bottomlat", FormatNumber(bbox.south)}};
   query.insert(query.end(), kWaveFields.begin(), kWaveFields.end());
@@ -927,6 +927,16 @@ WeatherGenerateResult GenerateGfs(const GFSRequest& request, HttpGet http_get,
                    static_cast<std::streamsize>(segment.size()));
     if (!output) throw ValidationError("writing downloaded GFS output failed");
     output.close();
+    if (request.bbox.CrossesAntimeridian()) {
+      auto regional = temporary; regional += ".regional";
+      try {
+        CropAndStitchGrib({temporary}, request.bbox, regional, !request.waves);
+        std::filesystem::remove(temporary);
+        std::filesystem::rename(regional, temporary);
+      } catch (...) {
+        std::error_code ignored; std::filesystem::remove(regional, ignored); throw;
+      }
+    }
     const auto scan = ScanGribMessages(temporary);
     const auto inspection = InspectGrib(temporary);
     std::filesystem::rename(temporary, request.output);
@@ -1617,6 +1627,16 @@ WeatherGenerateResult GenerateEcmwfOpenData(const GFSRequest& request,
     auto repacked = temporary;
     repacked += ".simple.grib2";
     RepackGrib2ToSimplePacking(temporary, repacked);
+    if (request.bbox.CrossesAntimeridian()) {
+      auto regional = temporary; regional += ".regional";
+      try {
+        CropAndStitchGrib({repacked}, request.bbox, regional);
+        std::filesystem::remove(repacked);
+        std::filesystem::rename(regional, repacked);
+      } catch (...) {
+        std::error_code ignored; std::filesystem::remove(regional, ignored); throw;
+      }
+    }
     const auto scan = ScanGribMessages(repacked);
     const auto inspection = InspectGrib(repacked);
     std::error_code ignored;

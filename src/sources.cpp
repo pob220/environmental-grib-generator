@@ -37,7 +37,7 @@ CurrentGrid MakeSyntheticRotaryCurrent(const BoundingBox& bbox, TimePoint time,
                             std::max(bbox.north - bbox.south, 1e-9);
     for (std::size_t x = 0; x < grid.nx(); ++x) {
       const double lon_norm = (grid.longitudes[x] - bbox.west) /
-                              std::max(bbox.east - bbox.west, 1e-9);
+                              std::max(bbox.Width(), 1e-9);
       const double spatial_phase = 1.4 * lon_norm - 0.9 * lat_norm;
       double amplitude_knots =
           peak_speed_knots * (0.35 + 0.65 * (0.25 + 0.75 * lon_norm));

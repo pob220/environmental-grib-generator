@@ -86,7 +86,9 @@ int main() {
     Invalid([&] { eg::EstimateEnvironment(r); });
     r.wave_step_hours = 3; r.include_waves = false;
     r.bbox.west = 179; r.bbox.east = -179;
-    Invalid([&] { eg::EstimateEnvironment(r); });
+    r.current_source = "synthetic";
+    Check(eg::EstimateEnvironment(r)["knownRecords"].asUInt64() > 0,
+          "crossing box estimates use its positive wrapped width");
     r.bbox = {-6, 53, -5, 54}; r.current_source = "synthetic";
     r.current_grid_spacing_deg = std::numeric_limits<double>::denorm_min();
     Invalid([&] { eg::EstimateEnvironment(r); });

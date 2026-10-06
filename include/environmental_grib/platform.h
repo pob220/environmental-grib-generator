@@ -52,6 +52,22 @@ inline FILE* OpenFileForReading(const std::filesystem::path& path) {
 #endif
 }
 
+inline std::int64_t FileTell(FILE* file) {
+#ifdef _WIN32
+  return ::_ftelli64(file);
+#else
+  return ::ftello(file);
+#endif
+}
+
+inline int FileSeek(FILE* file, std::int64_t offset) {
+#ifdef _WIN32
+  return ::_fseeki64(file, offset, SEEK_SET);
+#else
+  return ::fseeko(file, offset, SEEK_SET);
+#endif
+}
+
 constexpr std::uint16_t ByteSwap16(std::uint16_t value) {
   return static_cast<std::uint16_t>((value >> 8U) | (value << 8U));
 }

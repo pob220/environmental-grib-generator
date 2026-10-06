@@ -104,6 +104,14 @@ GribWriteSummary RepackGrib2ToSimplePacking(
     const std::filesystem::path& input,
     const std::filesystem::path& output);
 Json::Value InspectGrib(const std::filesystem::path& path);
+/** Crop and spatially stitch matching regular-lat/lon records. Fragments must
+ * share forecast identity and grid geometry. Coordinates/data are reordered
+ * together, masks are preserved, and gaps/conflicting overlaps are rejected.
+ * Output contains one continuous message per field/time, not two halves.
+ */
+GribWriteSummary CropAndStitchGrib(
+    const std::vector<std::filesystem::path>& inputs, const BoundingBox& bbox,
+    const std::filesystem::path& output, bool east_inclusive = true);
 GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
                                     const std::filesystem::path& output);
 GribWriteSummary WriteRegularLatLonGrib2(const RegularGrid& grid,

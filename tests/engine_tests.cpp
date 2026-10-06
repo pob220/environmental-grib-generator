@@ -511,7 +511,9 @@ int main() {
   Check(capabilities["schemaVersion"].asInt() == 1 &&
             capabilities["operations"][0].asString() == "generateEnvironment" &&
             capabilities["weatherProviders"][5].asString() == "metno_nordic" &&
-            capabilities["weatherPresets"][3].asString() == "all",
+            capabilities["weatherPresets"][3].asString() == "all" &&
+            capabilities["antimeridianBoundingBoxes"].asBool() &&
+            capabilities["generatorVersion"].asString() == "0.3.2",
         "job protocol capabilities");
   int retry_attempts = 0;
   std::vector<int> retry_delays;
@@ -652,6 +654,16 @@ int main() {
             std::isfinite(tpxo_seam_cache.u_cm_s.front().real()) &&
             Near(tpxo_seam_cache.u_cm_s.front().real(), 10.0),
         "TPXO negative dateline request maps back from 0..360 source axis");
+  for (const auto& longitude : {std::array<double,3>{170,180,190},
+                                  std::array<double,3>{-180,-60,60}}) {
+    WriteTpxoModelFixture(tpxo_seam_atlas, longitude);
+    const eg::BoundingBox crossing{170,-1,-170,0};
+    const auto crossing_grid = eg::BuildRegularGrid(crossing,.5);
+    const auto crossing_cache = eg::LoadTpxo10AtlasModel(tpxo_seam_root,crossing,crossing_grid);
+    Check(std::all_of(crossing_cache.u_cm_s.begin(),crossing_cache.u_cm_s.end(),
+                      [](const auto& value) { return Near(value.real(),10.0); }),
+          "direct TPXO windows interpolate across the date line and cyclic model seam");
+  }
   std::filesystem::remove_all(tpxo_seam_root);
   const auto predictor_time = eg::ParseUtcDateTime("2026-07-01T00:00:00Z");
   const std::vector<std::string> predictor_constituents{"m2", "s2"};
@@ -733,8 +745,8 @@ int main() {
 
   const eg::BoundingBox bbox{-1.0, 50.0, 0.0, 51.0};
   bbox.Validate();
-  ExpectValidation([] { eg::BoundingBox{-4.0, 51.5, -7.0, 55.5}.Validate(); },
-                   "inverted bbox rejected");
+  ExpectValidation([] { eg::BoundingBox{-4.0, 51.5, -4.0, 55.5}.Validate(); },
+                   "zero-width bbox rejected");
   const auto grid = eg::BuildRegularGrid(bbox, 0.5);
   Check(grid.nx() == 3 && grid.ny() == 3, "inclusive 3x3 grid");
   Check(grid.longitudes == std::vector<double>({-1.0, -0.5, 0.0}),

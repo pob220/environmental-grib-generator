@@ -288,10 +288,8 @@ CopernicusResult GenerateCopernicusNws(
   const Axis latitude = ReadAxis(asset, "latitude");
   const Axis longitude = ReadAxis(asset, "longitude");
   const Axis time = ReadAxis(asset, "time");
-  if (request.bbox.west < longitude.minimum ||
-      request.bbox.east > longitude.maximum ||
-      request.bbox.south < latitude.minimum ||
-      request.bbox.north > latitude.maximum)
+  if (!BoundingBox{longitude.minimum, latitude.minimum, longitude.maximum,
+                   latitude.maximum}.Contains(request.bbox))
     throw ValidationError("requested bbox is outside Copernicus NWS coverage");
   CopernicusResult result{request.output,
                           0,

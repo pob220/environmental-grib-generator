@@ -18,6 +18,7 @@
 #include <system_error>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/cancellation.h"
 #include "environmental_grib/geo.h"
 #include "environmental_grib/platform.h"
 
@@ -226,8 +227,36 @@ std::filesystem::path TemporarySibling(const std::filesystem::path& output) {
 }  // namespace
 
 GribScanResult ScanGribMessages(const std::filesystem::path& path) {
-  const auto data = ReadBytes(path);
-  return ScanGribBytes(data);
+  // Check framing without holding a whole forecast in memory. Individual
+  // fields are decoded later, one at a time, by ecCodes.
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input) throw ValidationError("unable to read file: " + PathToUtf8(path));
+  const auto end = input.tellg();
+  if (end < 0 || static_cast<std::uint64_t>(end) > std::numeric_limits<std::size_t>::max())
+    throw ValidationError("GRIB file size exceeds platform limits");
+  const auto size = static_cast<std::size_t>(end);
+  std::size_t offset = 0, count = 0;
+  while (offset < size) {
+    CheckCancellation();
+    std::array<unsigned char, 16> header{};
+    input.seekg(static_cast<std::streamoff>(offset));
+    if (size-offset < 8 || !input.read(reinterpret_cast<char*>(header.data()), 8) ||
+        std::memcmp(header.data(), "GRIB", 4) != 0)
+      throw ValidationError("invalid GRIB header at byte offset " + std::to_string(offset));
+    const std::size_t header_size = header[7] == 2 ? 16 : 8;
+    if (header_size == 16 && (size-offset < 16 ||
+        !input.read(reinterpret_cast<char*>(header.data()+8), 8)))
+      throw ValidationError("truncated GRIB2 header at byte offset " + std::to_string(offset));
+    const auto length = MessageLengthAt(header, 0);
+    if (length < header_size+4 || length > size-offset)
+      throw ValidationError("invalid GRIB message length at byte offset " + std::to_string(offset));
+    std::array<char,4> terminator{};
+    input.seekg(static_cast<std::streamoff>(offset+length-4));
+    if (!input.read(terminator.data(),4) || std::memcmp(terminator.data(),"7777",4) != 0)
+      throw ValidationError("GRIB terminator not found at byte offset " + std::to_string(offset));
+    offset += length; ++count;
+  }
+  return {count,size};
 }
 
 GribScanResult ScanGribBytes(std::span<const unsigned char> data) {
@@ -601,6 +630,204 @@ Json::Value InspectGrib(const std::filesystem::path& path) {
   return result;
 }
 
+
+GribWriteSummary CropAndStitchGrib(
+    const std::vector<std::filesystem::path>& inputs, const BoundingBox& bbox,
+    const std::filesystem::path& output, bool east_inclusive) {
+  bbox.Validate();
+  if (inputs.empty()) throw ValidationError("no GRIB inputs to crop");
+  struct FileCloser { void operator()(FILE* file) const { if (file) std::fclose(file); } };
+  struct Fragment { std::filesystem::path path; std::int64_t offset{}; };
+  std::vector<std::vector<Fragment>> groups;
+  std::map<std::string, std::size_t> identities;
+  // Index packed records on disk; decode only one field/time at a time.
+  for (const auto& path : inputs) {
+    if (path == output) throw ValidationError("GRIB crop requires a distinct output path");
+    ScanGribMessages(path);
+    std::unique_ptr<FILE, FileCloser> file(OpenFileForReading(path));
+    if (!file) throw ValidationError("cannot open GRIB crop input");
+    for (;;) {
+      const auto offset = FileTell(file.get());
+      int error = 0;
+      HandlePtr handle(codes_handle_new_from_file(nullptr, file.get(), PRODUCT_GRIB, &error), &codes_handle_delete);
+      if (!handle) { Check(error, "indexing GRIB crop"); break; }
+      if (GetString(handle.get(), "gridType") != "regular_ll")
+        throw ValidationError("crossing GRIB crop requires a regular latitude/longitude grid");
+      std::ostringstream identity;
+      for (const char* key : {"edition", "centre", "subCentre", "tablesVersion", "localTablesVersion",
+           "table2Version", "discipline", "parameterCategory", "parameterNumber", "indicatorOfParameter",
+           "typeOfLevel", "level", "typeOfSecondFixedSurface", "scaledValueOfSecondFixedSurface",
+           "dataDate", "dataTime", "second", "stepUnits", "startStep", "endStep", "stepType",
+           "productDefinitionTemplateNumber", "typeOfEnsembleForecast", "perturbationNumber",
+           "typeOfStatisticalProcessing", "numberOfTimeRanges", "generatingProcessIdentifier",
+           "typeOfGeneratingProcess", "typeOfFirstFixedSurface", "scaleFactorOfFirstFixedSurface",
+           "scaledValueOfFirstFixedSurface", "scaleFactorOfSecondFixedSurface",
+           "probabilityType", "scaleFactorOfLowerLimit", "scaledValueOfLowerLimit",
+           "scaleFactorOfUpperLimit", "scaledValueOfUpperLimit"})
+        identity << key << '=' << GetString(handle.get(), key).value_or("-") << '|';
+      auto [found, inserted] = identities.emplace(identity.str(), groups.size());
+      if (inserted) groups.emplace_back();
+      groups[found->second].push_back({path, offset});
+    }
+  }
+  if (groups.empty()) throw ValidationError("GRIB crop has no records");
+  std::filesystem::create_directories(output.parent_path().empty() ? "." : output.parent_path());
+  const auto temporary = TemporarySibling(output);
+  try {
+    std::ofstream destination(temporary, std::ios::binary | std::ios::trunc);
+    if (!destination) throw ValidationError("cannot create GRIB crop output");
+    for (const auto& group : groups) {
+      CheckCancellation();
+      struct Piece { std::vector<double> x, y, values; std::vector<bool> missing; };
+      std::vector<Piece> pieces;
+      HandlePtr prototype(nullptr, &codes_handle_delete);
+      double dx = 0.0, dy = 0.0, precision = 1e-8;
+      for (const auto& fragment : group) {
+        std::unique_ptr<FILE, FileCloser> file(OpenFileForReading(fragment.path));
+        if (!file || FileSeek(file.get(), fragment.offset))
+          throw ValidationError("cannot read indexed GRIB crop fragment");
+        int error = 0;
+        HandlePtr handle(codes_handle_new_from_file(nullptr, file.get(), PRODUCT_GRIB, &error), &codes_handle_delete);
+        Check(error, "reading GRIB crop fragment");
+        if (!handle) throw ValidationError("missing indexed GRIB crop fragment");
+        const long ni = GetLong(handle.get(), "Ni").value_or(0);
+        const long nj = GetLong(handle.get(), "Nj").value_or(0);
+        const double ix = GetDouble(handle.get(), "iDirectionIncrementInDegrees").value_or(0.0);
+        const double jy = GetDouble(handle.get(), "jDirectionIncrementInDegrees").value_or(0.0);
+        if (ni < 2 || nj < 2 || ni > 5000000 / nj || ix <= 0.0 || jy <= 0.0)
+          throw ValidationError("invalid regular GRIB crop dimensions/increments");
+        if (!prototype) {
+          prototype.reset(codes_handle_clone(handle.get())); dx = ix; dy = jy;
+        } else if (std::abs(dx-ix) > 1e-6 || std::abs(dy-jy) > 1e-6 ||
+                   GetString(prototype.get(), "shapeOfTheEarth") != GetString(handle.get(), "shapeOfTheEarth"))
+          throw ValidationError("GRIB fragments have incompatible grid geometry");
+        const long binary = GetLong(handle.get(), "binaryScaleFactor").value_or(-30);
+        const long decimal = GetLong(handle.get(), "decimalScaleFactor").value_or(0);
+        if (GetLong(handle.get(), "bitsPerValue").value_or(0) > 0)
+          precision = std::max(precision, 2.0*std::pow(2.0, binary)*std::pow(10.0, -decimal));
+        const double lon0 = GetDouble(handle.get(), "longitudeOfFirstGridPointInDegrees").value_or(0);
+        const double lat0 = GetDouble(handle.get(), "latitudeOfFirstGridPointInDegrees").value_or(0);
+        const double di = GetLong(handle.get(), "iScansNegatively").value_or(0) ? -ix : ix;
+        const double dj = GetLong(handle.get(), "jScansPositively").value_or(0) ? jy : -jy;
+        const bool adjacent_j = GetLong(handle.get(), "jPointsAreConsecutive").value_or(0);
+        const bool alternating = GetLong(handle.get(), "alternativeRowScanning").value_or(0);
+        std::vector<std::pair<double, long>> columns, rows;
+        constexpr double tolerance = 1e-6;
+        for (long i = 0; i < ni; ++i) {
+          const double longitude = UnwrapLongitude(lon0+i*di, bbox.west-tolerance);
+          if (longitude >= bbox.west-tolerance &&
+              (east_inclusive ? longitude <= bbox.UnwrappedEast()+tolerance : longitude < bbox.UnwrappedEast()-tolerance))
+            columns.emplace_back(longitude, i);
+        }
+        for (long j = 0; j < nj; ++j) {
+          const double latitude = lat0+j*dj;
+          if (latitude >= bbox.south-tolerance && latitude <= bbox.north+tolerance)
+            rows.emplace_back(latitude, j);
+        }
+        std::stable_sort(columns.begin(), columns.end());
+        std::stable_sort(rows.begin(), rows.end());
+        // Retain duplicate seam columns until assembly so inconsistent values
+        // or masks cannot be silently discarded.
+        if (columns.empty() || rows.empty()) continue;
+        auto decoded = GetValues(handle.get());
+        if (!decoded || decoded->size() != static_cast<std::size_t>(ni*nj))
+          throw ValidationError("GRIB crop values do not match the grid");
+        const double missing = GetDouble(handle.get(), "missingValue").value_or(9999.0);
+        const bool bitmap = GetLong(handle.get(), "bitmapPresent").value_or(0);
+        Piece piece;
+        for (const auto& [longitude, i] : columns) { (void)i; piece.x.push_back(longitude); }
+        for (const auto& [latitude, j] : rows) { (void)j; piece.y.push_back(latitude); }
+        for (const auto& [latitude, j] : rows) for (const auto& [longitude, i] : columns) {
+          (void)latitude; (void)longitude;
+          long index;
+          if (adjacent_j) {
+            const long row = alternating && i%2 ? nj-1-j : j;
+            index = i*nj+row;
+          } else {
+            const long column = alternating && j%2 ? ni-1-i : i;
+            index = j*ni+column;
+          }
+          const double value = (*decoded)[index];
+          piece.values.push_back(value);
+          piece.missing.push_back(!std::isfinite(value) || (bitmap && value == missing));
+        }
+        pieces.push_back(std::move(piece));
+      }
+      if (pieces.empty()) throw ValidationError("GRIB field has no data in the requested area");
+      const auto& latitudes = pieces.front().y;
+      std::vector<double> longitudes;
+      for (const auto& piece : pieces) {
+        if (piece.y.size() != latitudes.size())
+          throw ValidationError("GRIB fragments have different latitude coverage");
+        for (std::size_t y=0; y<latitudes.size(); ++y)
+          if (std::abs(piece.y[y]-latitudes[y]) > 1e-6)
+            throw ValidationError("GRIB fragments have misaligned latitudes");
+        longitudes.insert(longitudes.end(), piece.x.begin(), piece.x.end());
+      }
+      std::sort(longitudes.begin(), longitudes.end());
+      longitudes.erase(std::unique(longitudes.begin(), longitudes.end(), [](double a, double b) {
+        return std::abs(a-b) < 1e-6;
+      }), longitudes.end());
+      if (longitudes.size()<2 || latitudes.size()<2 ||
+          longitudes.front()-bbox.west >= dx+1e-6 ||
+          bbox.UnwrappedEast()-longitudes.back() > dx+1e-6 ||
+          latitudes.front()-bbox.south >= dy+1e-6 || bbox.north-latitudes.back() >= dy+1e-6)
+        throw ValidationError("GRIB field does not cover the requested area on its native grid");
+      for (std::size_t i=1; i<longitudes.size(); ++i)
+        if (std::abs(longitudes[i]-longitudes[i-1]-dx) > 1e-6)
+          throw ValidationError("GRIB field has a longitude gap or misaligned fragments");
+      const std::size_t nx = longitudes.size(), ny = latitudes.size();
+      if (nx > 5000000/ny) throw ValidationError("stitched GRIB grid is too large");
+      const double missing = GetDouble(prototype.get(), "missingValue").value_or(9999.0);
+      std::vector<double> values(nx*ny, missing);
+      std::vector<bool> seen(nx*ny, false), masks(nx*ny, true);
+      for (const auto& piece : pieces) for (std::size_t x=0; x<piece.x.size(); ++x) {
+        const auto column = std::lower_bound(longitudes.begin(), longitudes.end(), piece.x[x]-1e-6);
+        const auto target_x = static_cast<std::size_t>(column-longitudes.begin());
+        for (std::size_t y=0; y<ny; ++y) {
+          const auto source = y*piece.x.size()+x, target = y*nx+target_x;
+          if (seen[target] && (masks[target] != piece.missing[source] ||
+              (!masks[target] && std::abs(values[target]-piece.values[source]) > precision)))
+            throw ValidationError("overlapping GRIB fragments contain conflicting values/masks");
+          seen[target]=true; masks[target]=piece.missing[source];
+          values[target]=masks[target] ? missing : piece.values[source];
+        }
+      }
+      if (std::find(seen.begin(), seen.end(), false) != seen.end())
+        throw ValidationError("stitched GRIB field has uncovered cells");
+      if (GetLong(prototype.get(), "edition") == 2)
+        SetString(prototype.get(), "packingType", "grid_simple");
+      SetLong(prototype.get(), "Ni", static_cast<long>(nx));
+      SetLong(prototype.get(), "Nj", static_cast<long>(ny));
+      SetDouble(prototype.get(), "longitudeOfFirstGridPointInDegrees", Longitude360(longitudes.front()));
+      SetDouble(prototype.get(), "longitudeOfLastGridPointInDegrees", Longitude360(longitudes.back()));
+      SetDouble(prototype.get(), "latitudeOfFirstGridPointInDegrees", latitudes.front());
+      SetDouble(prototype.get(), "latitudeOfLastGridPointInDegrees", latitudes.back());
+      SetLong(prototype.get(), "iScansNegatively", 0);
+      SetLong(prototype.get(), "jScansPositively", 1);
+      SetLong(prototype.get(), "jPointsAreConsecutive", 0);
+      if (GetLong(prototype.get(), "edition") == 2)
+        SetLong(prototype.get(), "alternativeRowScanning", 0);
+      SetLong(prototype.get(), "bitmapPresent", std::find(masks.begin(), masks.end(), true) != masks.end());
+      SetDouble(prototype.get(), "missingValue", missing);
+      const long bits = GetLong(prototype.get(), "bitsPerValue").value_or(16);
+      SetLong(prototype.get(), "bitsPerValue", std::min(32L, std::max(16L, bits+2)));
+      Check(codes_set_double_array(prototype.get(), "values", values.data(), values.size()), "encoding cropped GRIB values");
+      const void* message = nullptr; std::size_t length = 0;
+      Check(codes_get_message(prototype.get(), &message, &length), "encoding cropped GRIB message");
+      destination.write(static_cast<const char*>(message), static_cast<std::streamsize>(length));
+      if (!destination) throw ValidationError("writing cropped GRIB failed");
+    }
+    destination.close();
+    if (ScanGribMessages(temporary).message_count != groups.size())
+      throw ValidationError("cropped GRIB message count mismatch");
+    std::filesystem::rename(temporary, output);
+    return {groups.size(), output};
+  } catch (...) {
+    std::error_code ignored; std::filesystem::remove(temporary, ignored); throw;
+  }
+}
+
 GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
                                     const std::filesystem::path& output) {
   if (grids.empty())
@@ -684,11 +911,11 @@ GribWriteSummary WriteGrib1Currents(const std::vector<CurrentGrid>& grids,
       SetDouble(handle.get(), "latitudeOfFirstGridPointInDegrees",
                 current.grid.latitudes.front());
       SetDouble(handle.get(), "longitudeOfFirstGridPointInDegrees",
-                current.grid.longitudes.front());
+                Longitude360(current.grid.longitudes.front()));
       SetDouble(handle.get(), "latitudeOfLastGridPointInDegrees",
                 current.grid.latitudes.back());
       SetDouble(handle.get(), "longitudeOfLastGridPointInDegrees",
-                current.grid.longitudes.back());
+                Longitude360(current.grid.longitudes.back()));
       SetDouble(handle.get(), "iDirectionIncrementInDegrees",
                 current.grid.longitude_spacing_deg);
       SetDouble(handle.get(), "jDirectionIncrementInDegrees",
@@ -796,11 +1023,11 @@ GribWriteSummary WriteRegularLatLonGrib2Chunk(
     SetDouble(handle.get(), "latitudeOfFirstGridPointInDegrees",
               grid.latitudes.front());
     SetDouble(handle.get(), "longitudeOfFirstGridPointInDegrees",
-              grid.longitudes.front());
+              Longitude360(grid.longitudes.front()));
     SetDouble(handle.get(), "latitudeOfLastGridPointInDegrees",
               grid.latitudes.back());
     SetDouble(handle.get(), "longitudeOfLastGridPointInDegrees",
-              grid.longitudes.back());
+              Longitude360(grid.longitudes.back()));
     SetDouble(handle.get(), "iDirectionIncrementInDegrees",
               grid.longitude_spacing_deg);
     SetDouble(handle.get(), "jDirectionIncrementInDegrees",

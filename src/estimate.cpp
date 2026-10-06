@@ -98,7 +98,7 @@ Json::Value EstimateEnvironment(const EnvironmentRequest& r) {
         for (const auto& [key, value] : GfsVariablesForPreset(r.weather_preset))
           if (key.starts_with("var_")) ++fields;
         // NOMADS' quarter-degree subset may align outward at its edges.
-        const Count nx = static_cast<Count>(std::ceil((r.bbox.east-r.bbox.west)/0.25)) + 2;
+        const Count nx = static_cast<Count>(std::ceil(r.bbox.Width()/0.25)) + 2;
         const Count ny = static_cast<Count>(std::ceil((r.bbox.north-r.bbox.south)/0.25)) + 2;
         known("GFS weather", Multiply(nx, ny),
               Multiply(fields, ForecastHourSequence(r.hours, r.step_hours).size()), 0, true);

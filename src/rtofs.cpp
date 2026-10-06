@@ -257,7 +257,8 @@ CurrentGrid ConvertFile(const std::filesystem::path& path, TimePoint time,
   const double margin = std::max(0.5, grid.spacing_deg * 3.0);
   std::vector<Point> points;
   for (std::size_t i = 0; i < lat.size(); ++i) {
-    if (lon[i] < bbox.west - margin || lon[i] > bbox.east + margin ||
+    lon[i] = UnwrapLongitude(lon[i], bbox.west - margin);
+    if (lon[i] > bbox.UnwrappedEast() + margin ||
         lat[i] < bbox.south - margin || lat[i] > bbox.north + margin ||
         !std::isfinite(u[i]) || !std::isfinite(v[i]))
       continue;

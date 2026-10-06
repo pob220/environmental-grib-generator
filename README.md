@@ -8,6 +8,17 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Version 0.3.2 adds date-line-crossing request boxes and continuous output grids
+for all geographically viable provider combinations. Bounds remain in
+`[-180, 180]`; west greater than east selects the eastward crossing interval.
+GFS requests use an unwrapped east longitude, while ECMWF global downloads
+are cropped locally. Cyclic NetCDF, Copernicus ARCO and TPXO sampling wraps
+neighbour columns; wave directions interpolate around the short angular arc.
+Imported regular latitude/longitude fragments are stitched into one record per
+field/time, preserving masks and rejecting gaps, mismatched cycles and
+conflicting overlaps. Framing validation and field assembly avoid loading an
+entire forecast into memory. These changes ship in xGRIB 0.3.7.
+
 Version 0.3.1 adds automatic regional hosted failover for NOAA GFS outages and
 rate limits. It preserves completed timesteps, validates the exact forecast,
 fields, levels, native grid and SHA-256 digest, obeys service `Retry-After`, and
@@ -33,7 +44,7 @@ individual rectangles with an unwrapped east longitude (possibly above 180),
 while the existing coverage bounds remain a conventional envelope. Merge
 validation compares these regions modulo 360, preserving gaps and latitude
 restrictions. GRIB data and coordinates are not rewritten. This does not add
-support for antimeridian-crossing generation request boxes.
+support for antimeridian-crossing generation request boxes until 0.3.2.
 
 Version 0.1.8 added offline `estimate-job` planning for supported weather, wave
 and current outputs, plus pre-generation versus measured-size reports in

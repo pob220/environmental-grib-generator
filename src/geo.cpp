@@ -13,6 +13,65 @@
 
 namespace environmental_grib {
 
+double Longitude360(double longitude) {
+  double result = std::fmod(longitude, 360.0);
+  if (result < 0.0) result += 360.0;
+  return result >= 360.0 ? 0.0 : result;
+}
+
+double Longitude180(double longitude) {
+  return Longitude360(longitude + 180.0) - 180.0;
+}
+
+double UnwrapLongitude(double longitude, double west) {
+  double offset = Longitude360(longitude - west);
+  if (offset > 360.0 - 1e-10) offset = 0.0;
+  return west + offset;
+}
+
+bool IsCyclicLongitudeAxis(double step, std::size_t count) {
+  return count > 1 && std::abs(std::abs(step) * count - 360.0) <=
+      std::max(1e-5, std::abs(step) * 1e-3);
+}
+
+LongitudeAxis OrderLongitudeAxis(const std::vector<double>& coordinates) {
+  std::vector<std::pair<double, std::size_t>> columns;
+  for (std::size_t i = 0; i < coordinates.size(); ++i) {
+    if (!std::isfinite(coordinates[i]))
+      throw ValidationError("source longitude coordinates must be finite");
+    columns.emplace_back(Longitude360(coordinates[i]), i);
+  }
+  std::stable_sort(columns.begin(), columns.end());
+  columns.erase(std::unique(columns.begin(), columns.end(), [](const auto& a, const auto& b) {
+    return std::abs(a.first - b.first) < 1e-8;
+  }), columns.end());
+  if (columns.size() < 2)
+    throw ValidationError("source longitude axis must have at least two distinct points");
+  double maximum_gap = -1.0, minimum_gap = 360.0;
+  std::size_t start = 0;
+  for (std::size_t i = 0; i < columns.size(); ++i) {
+    const auto next = (i + 1) % columns.size();
+    const double gap = next ? columns[next].first - columns[i].first
+                            : columns[0].first + 360.0 - columns[i].first;
+    minimum_gap = std::min(minimum_gap, gap);
+    if (gap > maximum_gap) { maximum_gap = gap; start = next; }
+  }
+  LongitudeAxis result;
+  result.cyclic = maximum_gap - minimum_gap <= std::max(1e-5, maximum_gap * 1e-3);
+  if (result.cyclic) start = 0;
+  const double origin = Longitude180(columns[start].first);
+  for (std::size_t i = 0; i < columns.size(); ++i) {
+    const auto& column = columns[(start + i) % columns.size()];
+    result.coordinates.push_back(UnwrapLongitude(column.first, origin));
+    result.indices.push_back(column.second);
+  }
+  return result;
+}
+
+double BoundingBox::Width() const {
+  return east > west ? east - west : east + 360.0 - west;
+}
+
 void BoundingBox::Validate() const {
   if (!std::isfinite(west) || !std::isfinite(east) || west < -180.0 ||
       west > 180.0 || east < -180.0 || east > 180.0) {
@@ -22,10 +81,8 @@ void BoundingBox::Validate() const {
       south > 90.0 || north < -90.0 || north > 90.0) {
     throw ValidationError("bbox latitudes must be within [-90, 90]");
   }
-  if (west >= east) {
-    throw ValidationError(
-        "bbox west must be less than east; antimeridian boxes are not "
-        "supported yet");
+  if (west == east || Width() <= 0.0) {
+    throw ValidationError("bbox must have a non-zero longitude width");
   }
   if (south >= north) {
     throw ValidationError("bbox south must be less than north");
@@ -33,8 +90,15 @@ void BoundingBox::Validate() const {
 }
 
 bool BoundingBox::Contains(const BoundingBox& other) const {
-  return other.west >= west && other.east <= east && other.south >= south &&
-         other.north <= north;
+  const double start = UnwrapLongitude(other.west, west);
+  return (Width() >= 360.0 - 1e-8 ||
+          (start >= west && start + other.Width() <= UnwrappedEast() + 1e-8)) &&
+         other.south >= south && other.north <= north;
+}
+
+bool BoundingBox::ContainsLongitude(double longitude, double tolerance) const {
+  return Width() >= 360.0 - tolerance ||
+         UnwrapLongitude(longitude, west - tolerance) <= UnwrappedEast() + tolerance;
 }
 
 TimePoint ParseUtcDateTime(const std::string& value) {
@@ -103,7 +167,7 @@ std::pair<std::size_t, std::size_t> RegularGridDimensions(
   if (!std::isfinite(spacing_deg) || spacing_deg <= 0.0) {
     throw ValidationError("grid spacing must be greater than zero");
   }
-  const double width = bbox.east - bbox.west;
+  const double width = bbox.Width();
   const double height = bbox.north - bbox.south;
   const double tolerance = std::max(1e-12, spacing_deg * 1e-9);
   if (spacing_deg > width + tolerance || spacing_deg > height + tolerance) {
@@ -129,15 +193,15 @@ RegularGrid BuildRegularGrid(const BoundingBox& bbox, double spacing_deg) {
   const auto [nx, ny] = RegularGridDimensions(bbox, spacing_deg);
   RegularGrid grid;
   grid.spacing_deg = spacing_deg;
-  grid.latitude_spacing_deg = spacing_deg;
-  grid.longitude_spacing_deg = spacing_deg;
+  grid.latitude_spacing_deg = (bbox.north - bbox.south) / (ny - 1);
+  grid.longitude_spacing_deg = bbox.Width() / (nx - 1);
   grid.longitudes.resize(nx);
   grid.latitudes.resize(ny);
   for (std::size_t i = 0; i < nx; ++i)
-    grid.longitudes[i] = bbox.west + static_cast<double>(i) * spacing_deg;
+    grid.longitudes[i] = bbox.west + static_cast<double>(i) * grid.longitude_spacing_deg;
   for (std::size_t j = 0; j < ny; ++j)
-    grid.latitudes[j] = bbox.south + static_cast<double>(j) * spacing_deg;
-  grid.longitudes.back() = bbox.east;
+    grid.latitudes[j] = bbox.south + static_cast<double>(j) * grid.latitude_spacing_deg;
+  grid.longitudes.back() = bbox.UnwrappedEast();
   grid.latitudes.back() = bbox.north;
   return grid;
 }

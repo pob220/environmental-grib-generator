@@ -179,9 +179,7 @@ std::map<int, std::vector<unsigned char>> ValidateHostedGfsBytes(
   ScanGribBytes(bytes);
   const auto fields = Fields(request);
   const double west = std::ceil(request.bbox.west * 4 - 1e-8) / 4;
-  const double east = request.bbox.east > request.bbox.west
-                          ? request.bbox.east
-                          : request.bbox.east + 360;
+  const double east = request.bbox.UnwrappedEast();
   const long columns = std::min(
       1440L,
       static_cast<long>((request.waves ? std::ceil(east * 4 - 1e-8)

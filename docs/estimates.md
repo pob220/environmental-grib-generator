@@ -39,7 +39,9 @@ different from the selected output spacing. Native regional GRIB streams may
 cover their full domain regardless of the requested area. The estimator does
 not pretend these are cropped regular grids. GFS all/marine filter requests
 select variable/level combinations needing a real inventory; they are unknown.
-Cross-dateline requests remain rejected consistently with the generator.
+Cross-dateline requests use their eastward width, for example 20 degrees for
+west=170/east=-170, consistently with the generator. Supported estimates count
+both halves once; source coverage and masked cells still require generation.
 GFS Wave's indexed fallback can download full-domain records, so a small-area
 estimate based only on the usual filtered quarter-degree output is unsafe.
 

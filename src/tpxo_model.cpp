@@ -156,10 +156,56 @@ AxisWindow Window(const std::vector<double>& axis, double minimum,
   return {first,last-first+1,std::vector<double>(first_it,last_it)};
 }
 
+std::vector<std::pair<AxisWindow, double>> LongitudeWindows(
+    const std::vector<double>& axis, const BoundingBox& bbox) {
+  if (axis.size() < 2 || !std::is_sorted(axis.begin(), axis.end()))
+    throw ValidationError("TPXO longitude axis must be increasing");
+  const auto ordered = OrderLongitudeAxis(axis);
+  const double halo = axis[1] - axis[0];
+  if (!ordered.cyclic) {
+    BoundingBox coverage{Longitude180(ordered.coordinates.front()), bbox.south,
+                         Longitude180(ordered.coordinates.back()), bbox.north};
+    if (!coverage.Contains(bbox))
+      throw ValidationError("requested area is outside TPXO longitude coverage");
+  }
+  std::vector<std::pair<AxisWindow, double>> result;
+  const double minimum = bbox.west - halo;
+  const double maximum = bbox.UnwrappedEast() + halo;
+  const int first = static_cast<int>(std::ceil((minimum - axis.back()) / 360.0));
+  const int last = static_cast<int>(std::floor((maximum - axis.front()) / 360.0));
+  for (int turn = first; turn <= last; ++turn) {
+    const double shift = turn * 360.0;
+    result.emplace_back(Window(axis, std::max(axis.front(), minimum - shift),
+                               std::min(axis.back(), maximum - shift), "longitude"), shift);
+  }
+  if (result.empty()) throw ValidationError("requested area is outside TPXO longitude coverage");
+  return result;
+}
+
 struct RegionalField {
   std::vector<double> x,y;
   std::vector<std::complex<double>> values;  // y,x
 };
+
+RegionalField JoinLongitudePieces(const std::vector<RegionalField>& pieces) {
+  RegionalField result;
+  result.y = pieces.front().y;
+  std::vector<std::pair<double, std::pair<std::size_t, std::size_t>>> columns;
+  for (std::size_t p = 0; p < pieces.size(); ++p)
+    for (std::size_t x = 0; x < pieces[p].x.size(); ++x)
+      columns.push_back({pieces[p].x[x], {p, x}});
+  std::stable_sort(columns.begin(), columns.end());
+  columns.erase(std::unique(columns.begin(), columns.end(), [](const auto& a, const auto& b) {
+    return std::abs(a.first - b.first) < 1e-8;
+  }), columns.end());
+  for (const auto& column : columns) result.x.push_back(column.first);
+  for (std::size_t y = 0; y < result.y.size(); ++y)
+    for (const auto& column : columns) {
+      const auto [p, x] = column.second;
+      result.values.push_back(pieces[p].values[y * pieces[p].x.size() + x]);
+    }
+  return result;
+}
 
 std::size_t Index2(const std::vector<std::size_t>& shape,
                    std::size_t a,std::size_t b) { return a*shape[1]+b; }
@@ -180,18 +226,7 @@ RegionalField ReadComponent(const std::filesystem::path& grid_path,
   for (std::size_t i=0;i<yall.size();++i)
     if (std::abs(grid_y[i]-yall[i])>1e-10)
       throw ValidationError("TPXO model and bathymetry latitudes differ");
-  const bool zero_to_360=xall.back()>180.0;
-  std::vector<std::pair<AxisWindow,double>> xwindows;
-  if(zero_to_360 && bbox.west<0.0 && bbox.east>=0.0) {
-    xwindows.emplace_back(Window(xall,bbox.west+360.0,xall.back(),"longitude"),-360.0);
-    xwindows.emplace_back(Window(xall,xall.front(),bbox.east,"longitude"),0.0);
-  } else {
-    double west=bbox.west,east=bbox.east;
-    const bool shifted_from_negative = zero_to_360 && west < 0.0;
-    if(shifted_from_negative) { west+=360.0; east+=360.0; }
-    xwindows.emplace_back(Window(xall,west,east,"longitude"),
-                          shifted_from_negative ? -360.0 : 0.0);
-  }
+  const auto xwindows = LongitudeWindows(xall, bbox);
   const auto yw=Window(yall,bbox.south,bbox.north,"latitude");
   const auto bath_shape=grid.Shape(grid.Var("h"+suffix));
   bool xy=bath_shape.size()==2 && bath_shape[0]==xall.size() && bath_shape[1]==yall.size();
@@ -226,17 +261,7 @@ RegionalField ReadComponent(const std::filesystem::path& grid_path,
     }
     pieces.push_back(std::move(piece));
   }
-  if(pieces.size()==1) return std::move(pieces.front());
-  RegionalField result; result.y=yw.values;
-  for(const auto& piece:pieces) result.x.insert(result.x.end(),piece.x.begin(),piece.x.end());
-  result.values.reserve(result.x.size()*result.y.size());
-  for(std::size_t y=0;y<result.y.size();++y)
-    for(const auto& piece:pieces)
-      result.values.insert(
-          result.values.end(),
-          piece.values.begin()+static_cast<std::ptrdiff_t>(y*piece.x.size()),
-          piece.values.begin()+static_cast<std::ptrdiff_t>((y+1)*piece.x.size()));
-  return result;
+  return JoinLongitudePieces(pieces);
 }
 
 RegionalField ReadHeightComponent(const std::filesystem::path& grid_path,
@@ -258,23 +283,7 @@ RegionalField ReadHeightComponent(const std::filesystem::path& grid_path,
     if (std::abs(grid_y[i] - yall[i]) > 1e-10)
       throw ValidationError("TPXO elevation and bathymetry latitudes differ");
 
-  const bool zero_to_360 = xall.back() > 180.0;
-  std::vector<std::pair<AxisWindow, double>> xwindows;
-  if (zero_to_360 && bbox.west < 0.0 && bbox.east >= 0.0) {
-    xwindows.emplace_back(
-        Window(xall, bbox.west + 360.0, xall.back(), "longitude"), -360.0);
-    xwindows.emplace_back(
-        Window(xall, xall.front(), bbox.east, "longitude"), 0.0);
-  } else {
-    double west = bbox.west, east = bbox.east;
-    const bool shifted = zero_to_360 && west < 0.0;
-    if (shifted) {
-      west += 360.0;
-      east += 360.0;
-    }
-    xwindows.emplace_back(Window(xall, west, east, "longitude"),
-                          shifted ? -360.0 : 0.0);
-  }
+  const auto xwindows = LongitudeWindows(xall, bbox);
   const auto yw = Window(yall, bbox.south, bbox.north, "latitude");
   const auto depth_shape = grid.Shape(grid.Var("hz"));
   const bool xy = depth_shape.size() == 2 && depth_shape[0] == xall.size() &&
@@ -322,21 +331,7 @@ RegionalField ReadHeightComponent(const std::filesystem::path& grid_path,
     }
     pieces.push_back(std::move(piece));
   }
-  if (pieces.size() == 1) return std::move(pieces.front());
-  RegionalField result;
-  result.y = yw.values;
-  for (const auto& piece : pieces)
-    result.x.insert(result.x.end(), piece.x.begin(), piece.x.end());
-  result.values.reserve(result.x.size() * result.y.size());
-  for (std::size_t y = 0; y < result.y.size(); ++y)
-    for (const auto& piece : pieces)
-      result.values.insert(
-          result.values.end(),
-          piece.values.begin() +
-              static_cast<std::ptrdiff_t>(y * piece.x.size()),
-          piece.values.begin() +
-              static_cast<std::ptrdiff_t>((y + 1) * piece.x.size()));
-  return result;
+  return JoinLongitudePieces(pieces);
 }
 
 std::complex<double> Bilinear(const RegionalField& source,double lon,double lat) {

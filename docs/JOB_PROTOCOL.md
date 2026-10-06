@@ -50,6 +50,14 @@ contains one compact JSON object per line. Event types are `started`,
 Passwords must never be placed in a job file. The named environment variable
 is read by the helper after validating the schema.
 
+Starting with helper 0.3.2 (xGRIB 0.3.7), bbox longitudes remain in `[-180, 180]`
+and `west > east` selects an eastward interval across the date line. Thus
+`west=170, east=-170` spans 20 degrees. Equal endpoints are invalid; the full
+world is `west=-180, east=180`. Output regular grids use continuous longitude
+columns and serialize endpoints according to GRIB conventions. Sources must
+cover the requested interval; crossing does not expand regional coverage.
+The `capabilities` result advertises `antimeridianBoundingBoxes: true`.
+
 Implemented generated-weather provider IDs are `gfs`, `noaa_hrrr`,
 `ukmo_ukv`, `metno_nordic`, `dwd_icon_eu`, `ecmwf_ifs_open`, and
 `ecmwf_aifs_open`. Weather presets are `minimal`, `routing`, `marine`, and

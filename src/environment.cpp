@@ -253,7 +253,7 @@ private:
 
 std::string CommonFingerprint(const EnvironmentRequest& request) {
   std::ostringstream value;
-  value << std::setprecision(17) << request.bbox.west << ','
+  value << "wrapped-v1|" << std::setprecision(17) << request.bbox.west << ','
         << request.bbox.south << ',' << request.bbox.east << ','
         << request.bbox.north << '|' << FormatUtcDateTime(request.start) << '|'
         << request.hours << '|'
@@ -726,6 +726,13 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     return GenerateExtendedEnvironment(request, std::move(http_get), now,
                                        std::move(progress));
   const std::string current_source = ResolveCurrentSource(request);
+  if (request.bbox.CrossesAntimeridian() && current_source != "none" && current_source != "existing-file" &&
+      current_source != "netcdf" && current_source != "tpxo-cache") {
+    const ProviderRegistry registry;
+    const auto& provider = registry.Get(current_source);
+    if (!provider.SupportsBbox(request.bbox))
+      throw ValidationError("requested bbox is outside " + provider.label + " coverage");
+  }
   if (current_source == "tpxo-cache") {
     if (!request.input_cache)
       throw ValidationError("tpxo-cache current source requires input-cache");
@@ -1396,6 +1403,15 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
 
   if (streams.empty())
     throw ValidationError("generation produced no environmental streams");
+  if (request.bbox.CrossesAntimeridian()) {
+    for (auto& [label, path] : streams) {
+      Report(progress, "assembling continuous " + label, "validating date-line coverage");
+      const auto continuous = workspace.File(label + "-continuous.grb");
+      CropAndStitchGrib({path}, request.bbox, continuous,
+                       label != "waves" || request.wave_provider != "gfs_wave");
+      path = continuous;
+    }
+  }
   Report(progress, "merging environmental GRIB",
          std::to_string(streams.size()) + " streams");
   EnvironmentalMergeRequest merge_request;

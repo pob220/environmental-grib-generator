@@ -936,7 +936,7 @@ public:
       if (!std::isfinite(latitude) || latitude < -90.0 || latitude > 90.0)
         throw ValidationError("water-level output latitude is invalid");
     for (const auto longitude : output.longitudes)
-      if (!std::isfinite(longitude) || longitude < -180.0 || longitude > 180.0)
+      if (!std::isfinite(longitude))
         throw ValidationError("water-level output longitude is invalid");
     const auto started = Clock::now();
     const auto load_before = fields_.stats().load_ms;

@@ -3,6 +3,7 @@
 #include <blosc.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -216,19 +217,38 @@ private:
   std::pair<double, bool> Bilinear(std::size_t time_index, double lat,
                                    double lon) {
     const double fy = (lat - latitude_.minimum) / latitude_.step;
-    const double fx = (lon - longitude_.minimum) / longitude_.step;
-    if (fx < 0 || fy < 0 || fx > longitude_.size - 1 || fy > latitude_.size - 1)
+    lon = UnwrapLongitude(lon, longitude_.minimum);
+    double fx = (lon - longitude_.minimum) / longitude_.step;
+    const bool repeated = longitude_.size > 2 && IsCyclicLongitudeAxis(longitude_.step, longitude_.size - 1);
+    const std::size_t columns = longitude_.size - (repeated ? 1 : 0);
+    const bool cyclic = repeated || IsCyclicLongitudeAxis(longitude_.step, columns);
+    if (cyclic && fx >= columns) fx = 0.0;
+    if (fx < 0 || fy < 0 || (!cyclic && fx > longitude_.size - 1) || fy > latitude_.size - 1)
       return {0.0, false};
     const std::size_t x0 = std::floor(fx), y0 = std::floor(fy);
-    const std::size_t x1 = std::min(x0 + 1, longitude_.size - 1),
+    const std::size_t x1 = cyclic ? (x0 + 1) % columns : std::min(x0 + 1, longitude_.size - 1),
                       y1 = std::min(y0 + 1, latitude_.size - 1);
     const auto a = At(time_index, y0, x0), b = At(time_index, y0, x1);
     const auto c = At(time_index, y1, x0), d = At(time_index, y1, x1);
-    if (!a.second || !b.second || !c.second || !d.second) return {0.0, false};
     const double tx = fx - x0, ty = fy - y0;
-    return {(a.first * (1 - tx) + b.first * tx) * (1 - ty) +
-                (c.first * (1 - tx) + d.first * tx) * ty,
-            true};
+    const std::array values{a, b, c, d};
+    const std::array weights{(1-tx)*(1-ty), tx*(1-ty), (1-tx)*ty, tx*ty};
+    double sum = 0.0, sine = 0.0, cosine = 0.0;
+    constexpr double pi = 3.14159265358979323846;
+    const bool direction = variable_ == "VMDR";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (weights[i] <= 1e-12) continue;
+      if (!values[i].second) return {0.0, false};
+      if (direction) {
+        sine += weights[i]*std::sin(values[i].first*pi/180.0);
+        cosine += weights[i]*std::cos(values[i].first*pi/180.0);
+      } else sum += weights[i]*values[i].first;
+    }
+    if (direction) {
+      if (std::hypot(sine, cosine) < 1e-12) return {0.0, false};
+      sum = Longitude360(std::atan2(sine, cosine)*180.0/pi);
+    }
+    return {sum, true};
   }
 
   std::pair<double, bool> At(std::size_t time_index, std::size_t y,
@@ -390,6 +410,17 @@ std::map<std::string, std::vector<NetCDFScalarField>> ReadArcoFields(
   };
   auto generated = ParallelMapOrdered(
       variables, kDefaultDownloadConcurrency, [&](const std::string& variable) {
+        const auto& asset = dataset.item["assets"]["timeChunked"];
+        const auto longitude = AxisFor(asset, variable, "longitude");
+        const auto latitude = AxisFor(asset, variable, "latitude");
+        const bool cyclic = IsCyclicLongitudeAxis(longitude.step, longitude.size) ||
+            (longitude.size > 2 && IsCyclicLongitudeAxis(longitude.step, longitude.size - 1));
+        const double south = latitude.minimum;
+        const double north = south + (latitude.size - 1)*latitude.step;
+        BoundingBox coverage{cyclic ? -180.0 : Longitude180(longitude.minimum), south,
+            cyclic ? 180.0 : Longitude180(longitude.minimum + (longitude.size - 1)*longitude.step), north};
+        if (bbox.CrossesAntimeridian() && !coverage.Contains(bbox))
+          throw ValidationError("requested bbox is outside ARCO coverage for " + variable);
         VariableReader reader(dataset, variable, username, download, timeout);
         VariableFields fields{variable, {}};
         fields.fields.reserve(times.size());

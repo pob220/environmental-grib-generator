@@ -17,9 +17,28 @@ struct BoundingBox {
   double north{};
 
   void Validate() const;
+  [[nodiscard]] double Width() const;
+  [[nodiscard]] double UnwrappedEast() const { return west + Width(); }
+  [[nodiscard]] bool CrossesAntimeridian() const { return west > east; }
+  [[nodiscard]] bool ContainsLongitude(double longitude, double tolerance = 0.0) const;
   [[nodiscard]] bool Contains(const BoundingBox& other) const;
   bool operator==(const BoundingBox&) const = default;
 };
+
+// Longitude geometry is continuous internally. Only provider/GRIB boundaries
+// convert to their required convention; never sort the endpoints of a box.
+double Longitude360(double longitude);
+double Longitude180(double longitude);
+double UnwrapLongitude(double longitude, double west);
+bool IsCyclicLongitudeAxis(double step, std::size_t count);
+struct LongitudeAxis {
+  std::vector<double> coordinates;
+  std::vector<std::size_t> indices;
+  bool cyclic{};
+};
+// Sort columns eastward, remove repeated seam columns, and identify the real
+// regional extent (the complement of the largest gap), including wrapped axes.
+LongitudeAxis OrderLongitudeAxis(const std::vector<double>& coordinates);
 
 struct RegularGrid {
   std::vector<double> latitudes;
