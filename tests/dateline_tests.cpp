@@ -45,7 +45,8 @@ std::vector<unsigned char> JsonBytes(const Json::Value& value) {
   auto text = Json::writeString(Json::StreamWriterBuilder{}, value);
   return {text.begin(), text.end()};
 }
-void WaveAndCurrentNetCDF(const std::filesystem::path& path, std::vector<double> longitude) {
+void WaveAndCurrentNetCDF(const std::filesystem::path& path, std::vector<double> longitude,
+    const std::string& origin = "hours since 2026-10-04 12:00:00", const std::string& calendar = "") {
   int file, x, y, t, lon, lat, time;
   Nc(nc_create(eg::PathToUtf8(path).c_str(), NC_CLOBBER, &file));
   Nc(nc_def_dim(file, "longitude", longitude.size(), &x)); Nc(nc_def_dim(file, "latitude", 3, &y));
@@ -53,8 +54,8 @@ void WaveAndCurrentNetCDF(const std::filesystem::path& path, std::vector<double>
   Nc(nc_def_var(file, "longitude", NC_DOUBLE, 1, &x, &lon));
   Nc(nc_def_var(file, "latitude", NC_DOUBLE, 1, &y, &lat));
   Nc(nc_def_var(file, "time", NC_DOUBLE, 1, &t, &time));
-  const std::string origin = "hours since 2026-10-04 12:00:00";
   Nc(nc_put_att_text(file, time, "units", origin.size(), origin.c_str()));
+  if (!calendar.empty()) Nc(nc_put_att_text(file,time,"calendar",calendar.size(),calendar.c_str()));
   const int dims[]{t,y,x}; std::map<std::string,int> variables;
   for (const auto& name : {"uo", "vo", "VHM0", "VTPK", "VMDR"}) {
     Nc(nc_def_var(file, name, NC_DOUBLE, 3, dims, &variables[name]));
@@ -163,6 +164,57 @@ int main(int argc,char** argv) {
     Check(grid.nx()==81 && grid.longitudes.back()==190,"continuous target grid");
     const auto irregular=eg::BuildRegularGrid({179,-1,-178.7,1},.5);
     for (std::size_t x=1;x<irregular.nx();++x) Check(std::abs(irregular.longitudes[x]-irregular.longitudes[x-1]-irregular.longitude_spacing_deg)<1e-10,"off-grid endpoints still encode a regular grid");
+    // Longitude representation never changes UTC, including local dates on
+    // opposite sides of the line and real UTC calendar rollovers.
+    const auto east_local = eg::ParseUtcDateTime("2026-10-05T00:00:00+12:00");
+    const auto west_local = eg::ParseUtcDateTime("2026-10-04T00:00:00-12:00");
+    Check(east_local == west_local && east_local == start,
+          "different local dates on either side of the line identify the same UTC instant");
+    Reject([] { eg::ParseUtcDateTime("2026-02-29T00:00:00Z"); },"invalid leap date rejected");
+    const std::vector<std::pair<std::string,std::vector<std::string>>> rollovers{
+      {"2026-10-06T23:00:00Z",{"20261006T2300","20261007T0200","20261007T0500"}},
+      {"2026-12-31T23:00:00Z",{"20261231T2300","20270101T0200","20270101T0500"}},
+      {"2024-02-28T23:00:00Z",{"20240228T2300","20240229T0200","20240229T0500"}},
+      {"2024-02-29T23:00:00Z",{"20240229T2300","20240301T0200","20240301T0500"}}};
+    for (std::size_t n=0;n<rollovers.size();++n) {
+      const auto reference=eg::ParseUtcDateTime(rollovers[n].first);
+      std::vector<eg::Grib2Field> frames;
+      std::vector<eg::CurrentGrid> current_frames;
+      for (int lead : {0,3,6}) {
+        frames.push_back({lead,"10u",std::vector<double>(grid.size(),3+lead),{}});
+        frames.push_back({lead,"10v",std::vector<double>(grid.size(),1),{}});
+        frames.push_back({lead,"swh",std::vector<double>(grid.size(),2),{}});
+        current_frames.push_back({reference+std::chrono::hours(lead),grid,
+          std::vector<double>(grid.size(),.5),std::vector<double>(grid.size(),.1),{}});
+      }
+      const auto w=root/("rollover-weather-"+std::to_string(n)+".grb2"),
+                 c=root/("rollover-current-"+std::to_string(n)+".grb");
+      eg::WriteRegularLatLonGrib2(grid,reference,frames,w);
+      eg::WriteGrib1Currents(current_frames,c);
+      eg::EnvironmentalMergeRequest req;req.weather=w;req.current=c;
+      req.output=root/("rollover-"+std::to_string(n)+".grb");req.overwrite=true;
+      const auto merged=eg::MergeEnvironmentalGribs(req);
+      Check(merged.success,"crossing calendar-rollover merge");CheckContinuous(req.output,15);
+      const auto& times=merged.output_inspection["valid_times"];
+      Check(times.size()==3,"no phantom day introduced at the longitude seam");
+      for (std::size_t i=0;i<3;++i) Check(times[Json::ArrayIndex(i)].asString()==rollovers[n].second[i],
+          "GRIB1 currents and GRIB2 weather/waves retain the same exact UTC rollover");
+    }
+    for (const auto& origin : {"hours since 2026-10-05 00:00:00 +12:00",
+                             "hours since 2026-10-04 00:00:00 -12:00",
+                             "hours since 2026-10-04 12:00:00 UTC",
+                             "hours since 2026-10-05 00:00 +12",
+                             "hours since 2026-10-04 00:00:00 -1200",
+                             "hours since 2026-10-04 09:00 -3:00"}) {
+      const auto path=root/"offset-time.nc";WaveAndCurrentNetCDF(path,{-180,-135,-90,-45,0,45,90,135},origin,"gregorian");
+      eg::NetCDFCurrentSource source(path,{});
+      Check(source.GetCurrentGrid(box,start,grid).mask.empty(),"CF signed offset normalizes the local date to UTC");
+      Check(source.GetCurrentGrid(box,start+std::chrono::hours(6),grid).mask.empty(),"CF forecast cadence retained after offset normalization");
+    }
+    const auto noncivil=root/"noncivil.nc";
+    WaveAndCurrentNetCDF(noncivil,{-180,-135,-90,-45,0,45,90,135},"hours since 2026-10-04 12:00:00","360_day");
+    Reject([&] { eg::NetCDFCurrentSource source(noncivil,{});(void)source.GetCurrentGrid(box,start,grid); },
+           "noncivil calendar cannot silently become a Gregorian forecast");
     std::vector<std::filesystem::path> currents, weather, waves;
     for (auto longitude : {std::vector<double>{-180,-135,-90,-45,0,45,90,135}, std::vector<double>{315,270,225,180,135,90,45,0}, std::vector<double>{170,180,-170}, std::vector<double>{170,180,190}, std::vector<double>{-180,-135,-90,-45,0,45,90,135,180}}) {
       const auto file=root/("source-"+std::to_string(currents.size())+".nc"); WaveAndCurrentNetCDF(file,longitude);

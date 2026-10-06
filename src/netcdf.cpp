@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -175,16 +176,47 @@ double RegularSpacing(const std::vector<double>& sorted, const std::string& labe
 }
 
 TimePoint ParseCfTimeOrigin(std::string value) {
-  std::replace(value.begin(), value.end(), ' ', 'T');
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) throw ValidationError("empty NetCDF time origin");
+  value = value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1);
+  if (value.size() > 10 && std::isspace(static_cast<unsigned char>(value[10])))
+    value[10] = 'T';
+  value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char c) {
+    return std::isspace(c);
+  }), value.end());
+  if (value.ends_with("UTC")) value.replace(value.size()-3,3,"Z");
   if (value.find('T') == std::string::npos) value += "T00:00:00";
   const auto t = value.find('T');
-  if (value.size() == t + 6) value += ":00";
-  if (value.back() != 'Z' && value.find('+', t) == std::string::npos) value += 'Z';
+  auto zone = value.find_first_of("+-", t);
+  const auto time_end = zone != std::string::npos ? zone :
+      value.back() == 'Z' ? value.size()-1 : value.size();
+  if (time_end == t + 6) { value.insert(time_end,":00"); if (zone != std::string::npos) zone += 3; }
+  if (zone != std::string::npos) {
+    auto offset = value.substr(zone+1);
+    const auto colon = offset.find(':');
+    if (colon == 1 && offset.size() == 4) offset.insert(0,"0");
+    else if (colon == std::string::npos && std::all_of(offset.begin(),offset.end(),
+          [](unsigned char c) { return std::isdigit(c); })) {
+      if (offset.size() == 1) offset = "0"+offset+":00";
+      else if (offset.size() == 2) offset += ":00";
+      else if (offset.size() == 3) offset = "0"+offset.substr(0,1)+":"+offset.substr(1);
+      else if (offset.size() == 4) offset.insert(2,":");
+    }
+    value.replace(zone+1,std::string::npos,offset);
+  }
+  // A CF origin can carry either sign of UTC offset. A negative offset must
+  // not acquire a trailing Z or be interpreted as a local calendar date.
+  if (value.back() != 'Z' && zone == std::string::npos) value += 'Z';
   return ParseUtcDateTime(value);
 }
 
 std::vector<TimePoint> ReadTimes(int file, const Spec& spec) {
   const auto values = ReadCoordinate(file, spec.time);
+  const auto calendar = AttributeText(file, spec.time, "calendar");
+  if (!calendar.empty() && calendar != "standard" && calendar != "gregorian" &&
+      calendar != "proleptic_gregorian")
+    throw ValidationError("NetCDF calendar '" + calendar +
+        "' cannot be combined with real-world UTC forecasts; use a Gregorian calendar source");
   const std::string units = AttributeText(file, spec.time, "units");
   const auto since = units.find(" since ");
   if (since == std::string::npos) throw ValidationError("NetCDF time units must use '<unit> since <UTC origin>'");

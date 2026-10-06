@@ -135,6 +135,10 @@ TimePoint ParseUtcDateTime(const std::string& value) {
       minute > 59 || second > 60) {
     throw ValidationError("invalid datetime fields");
   }
+  if (!std::chrono::year_month_day{std::chrono::year{year},
+          std::chrono::month{static_cast<unsigned>(month)},
+          std::chrono::day{static_cast<unsigned>(day)}}.ok())
+    throw ValidationError("invalid calendar date");
   std::tm tm{};
   tm.tm_year = year - 1900;
   tm.tm_mon = month - 1;
