@@ -998,9 +998,23 @@ GribWriteSummary WriteRegularLatLonGrib2Chunk(
     if (field.short_name != "refc") {
       SetString(handle.get(), "shortName", field.short_name);
     }
+    const bool surface_wave = field.short_name == "swh" ||
+                              field.short_name == "htsgw" ||
+                              field.short_name == "perpw" ||
+                              field.short_name == "dirpw" ||
+                              field.short_name == "mwp" ||
+                              field.short_name == "mwd";
     if (field.type_of_level)
       SetString(handle.get(), "typeOfLevel", *field.type_of_level);
-    if (field.level) SetDouble(handle.get(), "level", *field.level);
+    else if (surface_wave)
+      // Older ecCodes samples retain heightAboveGround even after selecting
+      // an ocean-wave parameter. Encode its surface level explicitly so
+      // readers do not discard an otherwise valid wave field.
+      SetString(handle.get(), "typeOfLevel", "surface");
+    if (field.level)
+      SetDouble(handle.get(), "level", *field.level);
+    else if (surface_wave)
+      SetDouble(handle.get(), "level", 0);
     SetLong(handle.get(), "dataDate",
             (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday);
     SetLong(handle.get(), "dataTime", tm.tm_hour * 100 + tm.tm_min);

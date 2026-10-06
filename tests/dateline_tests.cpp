@@ -257,6 +257,10 @@ int main(int argc,char** argv) {
     const auto cop_wave=root/"copernicus-waves.grb2";
     eg::GenerateCopernicusGlobalWaves(box,start,0,3,"fixture","fixture",cop_wave,.25,true,fetch,[](const auto&,const auto&,double) { return true; });
     CheckContinuous(cop_wave,3); waves.push_back(cop_wave);
+    const auto wave_inspection = eg::InspectGrib(cop_wave);
+    for (const auto& message : wave_inspection["messages"])
+      Check(message["level_type"].asString()=="surface" && message["level"].asInt()==0,
+            "generated waves have a surface level with older and newer ecCodes");
     for (int version : {1,2}) {
       eg::test::XtdFixtureOptions options; options.lon_u0=options.lon_v0=-180; options.west=-180; options.east=180;
       const auto package=root/("v"+std::to_string(version)+".xtd");
