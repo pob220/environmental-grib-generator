@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(environmental_grib_generator VERSION 0.3.3 LANGUAGES CXX)
+project(environmental_grib_generator VERSION 0.3.4 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -104,6 +104,7 @@ add_library(environmental_grib_engine STATIC
   src/preflight.cpp
   src/estimate.cpp
   src/copernicus.cpp
+  src/copernicus_auth.cpp
   src/geo.cpp
   src/gfs_fallback.cpp
   src/grib.cpp
@@ -160,6 +161,12 @@ endif()
 endif()
 
 if(BUILD_TESTING)
+  add_executable(environmental_grib_request_validation_tests tests/request_validation_tests.cpp)
+  target_link_libraries(environmental_grib_request_validation_tests PRIVATE environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_request_validation_tests)
+  endif()
+  add_test(NAME environmental_grib_request_validation_tests COMMAND environmental_grib_request_validation_tests)
   add_executable(environmental_grib_gfs_fallback_tests tests/gfs_fallback_tests.cpp)
   target_link_libraries(environmental_grib_gfs_fallback_tests PRIVATE environmental_grib_engine)
   add_test(NAME environmental_grib_gfs_fallback_tests COMMAND environmental_grib_gfs_fallback_tests)

@@ -13,6 +13,7 @@
 #include "environmental_grib/error.h"
 #include "environmental_grib/preflight.h"
 #include "environmental_grib/copernicus.h"
+#include "environmental_grib/copernicus_auth.h"
 #include "environmental_grib/environment.h"
 #include "environmental_grib/estimate.h"
 #include "environmental_grib/geo.h"
@@ -558,6 +559,8 @@ int RunJob(const std::vector<std::string>& args) {
     auto result = eg::JobStatusJson("failed");
     result["error"]["code"] = "generation_failed";
     result["error"]["message"] = error.what();
+    if (dynamic_cast<const eg::CopernicusAuthenticationError*>(&error))
+      result["error"]["code"] = "copernicus_authentication_failed";
     if (const auto* preflight = dynamic_cast<const eg::PreflightError*>(&error)) {
       result["error"]["code"] = "preflight_required";
       result["error"]["preflight"] = preflight->issue();

@@ -1,4 +1,5 @@
 #include "environmental_grib/copernicus.h"
+#include "environmental_grib/copernicus_auth.h"
 #include "environmental_grib/cancellation.h"
 
 #include <blosc.h>
@@ -82,20 +83,20 @@ bool ValidateCredentialsImpl(const std::string& username,
   long http = 0;
   curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http);
   if (status != CURLE_OK)
-    throw ValidationError(
+    throw CopernicusAuthenticationError(
         std::string("Copernicus authentication connection failed: ") +
         curl_easy_strerror(status));
-  if (http == 401) return false;
   if (http != 200)
-    throw ValidationError("Copernicus authentication service returned HTTP " +
-                          std::to_string(http));
+    throw CopernicusAuthenticationError(
+        CopernicusAuthenticationFailure(http, response));
   const auto token_json =
       ParseJson(std::vector<unsigned char>(response.begin(), response.end()),
                 "Copernicus authentication");
+  if (!token_json["access_token"].isString() ||
+      token_json["access_token"].asString().empty())
+    throw CopernicusAuthenticationError(
+        "Copernicus authentication response contained no valid access token. Try again later; if this persists, report it with your xGRIB version.");
   const auto token = token_json["access_token"].asString();
-  if (token.empty())
-    throw ValidationError(
-        "Copernicus authentication response contained no access token");
   response.clear();
   const std::string authorization = "Authorization: Bearer " + token;
   std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> headers(
@@ -112,12 +113,22 @@ bool ValidateCredentialsImpl(const std::string& username,
   const auto user_status = curl_easy_perform(curl.get());
   CheckCancellation();
   curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http);
-  if (user_status != CURLE_OK || http != 200)
-    throw ValidationError("Copernicus user-information validation failed");
+  if (user_status != CURLE_OK)
+    throw CopernicusAuthenticationError(
+        std::string("Copernicus account verification connection failed: ") +
+        curl_easy_strerror(user_status));
+  if (http != 200)
+    throw CopernicusAuthenticationError(
+        "Copernicus Marine could not verify the account after sign-in (HTTP " +
+        std::to_string(http) + "). Try again later; if this persists, report it with your xGRIB version.");
   const auto user =
       ParseJson(std::vector<unsigned char>(response.begin(), response.end()),
                 "Copernicus user information");
-  return !user["preferred_username"].asString().empty();
+  if (!user["preferred_username"].isString() ||
+      user["preferred_username"].asString().empty())
+    throw CopernicusAuthenticationError(
+        "Copernicus Marine returned incomplete account information after sign-in. Try again later; if this persists, report it with your xGRIB version.");
+  return true;
 }
 
 Json::Value ParseJson(const std::vector<unsigned char>& bytes,
@@ -127,8 +138,10 @@ Json::Value ParseJson(const std::vector<unsigned char>& bytes,
   Json::Value value;
   std::string errors;
   const char* begin = reinterpret_cast<const char*>(bytes.data());
-  if (!reader->parse(begin, begin + bytes.size(), &value, &errors))
-    throw ValidationError("invalid JSON from " + context + ": " + errors);
+  if (!reader->parse(begin, begin + bytes.size(), &value, &errors) ||
+      !value.isObject())
+    throw CopernicusAuthenticationError(
+        context + " returned an invalid response. Try again later; if this persists, report it with your xGRIB version.");
   return value;
 }
 

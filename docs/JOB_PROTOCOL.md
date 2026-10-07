@@ -15,6 +15,11 @@ The result file is written atomically. It is first created with `status` set to
 contains one compact JSON object per line. Event types are `started`,
 `progress`, `complete`, and `failed`.
 
+Copernicus sign-in and account-verification failures use
+`error.code: copernicus_authentication_failed`. The message describes recognised
+service reasons and retains HTTP status where available, without exposing raw
+authentication responses. Area validation runs before authentication.
+
 ## Request schema version 1
 
 ```json

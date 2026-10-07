@@ -8,6 +8,13 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Version 0.3.4 shares download-area validation with both plugin interfaces and
+reports Copernicus authentication failures with safe, actionable messages.
+Invalid areas fail before authentication or downloads; custom and date-line
+boxes retain their existing meaning. Job failures use the structured
+`copernicus_authentication_failed` code for sign-in and account-verification
+errors. Raw authentication responses and JSON parser details are never shown.
+
 Version 0.3.3 adds local forecast-time preflight to `estimate-job` and structured
 `preflight_required` errors to `run-job`. GUI requests use `timePolicy: review`:
 unsupported settings and components without a usable common UTC period require

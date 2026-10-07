@@ -1,4 +1,5 @@
 #include "environmental_grib/geo.h"
+#include "environmental_grib/area_validation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -73,20 +74,8 @@ double BoundingBox::Width() const {
 }
 
 void BoundingBox::Validate() const {
-  if (!std::isfinite(west) || !std::isfinite(east) || west < -180.0 ||
-      west > 180.0 || east < -180.0 || east > 180.0) {
-    throw ValidationError("bbox longitudes must be within [-180, 180]");
-  }
-  if (!std::isfinite(south) || !std::isfinite(north) || south < -90.0 ||
-      south > 90.0 || north < -90.0 || north > 90.0) {
-    throw ValidationError("bbox latitudes must be within [-90, 90]");
-  }
-  if (west == east || Width() <= 0.0) {
-    throw ValidationError("bbox must have a non-zero longitude width");
-  }
-  if (south >= north) {
-    throw ValidationError("bbox south must be less than north");
-  }
+  const auto issue = ValidateDownloadArea(west, south, east, north);
+  if (issue.message) throw ValidationError(issue.message);
 }
 
 bool BoundingBox::Contains(const BoundingBox& other) const {
