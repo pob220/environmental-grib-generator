@@ -138,6 +138,9 @@ int main() {
                waves = root / "waves.grb2";
     Wind(weather, {0, 2, 4, 6});
     Currents(current, {0, 3, 6});
+    Check(eg::ReadGribTimeInventory(current).count("parameter-49|surface|0") == 1 &&
+              eg::ReadGribTimeInventory(current).count("parameter-50|surface|0") == 1,
+          "standard current identities do not depend on ecCodes short-name aliases");
     eg::TimedGribInputs inputs{{"weather", weather}, {"current", current}};
     Check(!eg::PreflightGribTimes(inputs).isMember("code"),
           "2h weather / 3h currents with equal coverage need no prompt");

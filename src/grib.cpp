@@ -1380,6 +1380,15 @@ GribTimeInventory ReadGribTimeInventory(const std::filesystem::path& path) {
       name = "parameter-" + std::to_string(parameter.value_or(
           GetLong(handle.get(), "paramId").value_or(-1)));
     }
+    // WMO GRIB1 table 2 current components have different short names in
+    // supported ecCodes releases. Use their stable standard parameter codes
+    // for coverage identity and labels, including preferred/fallback unions.
+    if (GetLong(handle.get(), "editionNumber") == 1 &&
+        GetLong(handle.get(), "table2Version") == 2) {
+      const auto parameter = GetLong(handle.get(), "indicatorOfParameter");
+      if (parameter == 49 || parameter == 50)
+        name = "parameter-" + std::to_string(*parameter);
+    }
     auto level_type = GetString(handle.get(), "typeOfLevel").value_or("");
     const auto level = GetLong(handle.get(), "level").value_or(0);
     // UKV's converted mean sea-level pressure can carry surface/0 while
