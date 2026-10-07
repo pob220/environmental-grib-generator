@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/preflight.h"
 #include "environmental_grib/gfs_fallback.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/grib.h"
@@ -30,6 +31,13 @@ namespace environmental_grib {
 namespace {
 
 std::atomic<std::uint64_t> g_workspace_sequence{0};
+
+void AddTimeCoverageNote(Json::Value& diagnostics, const std::string& policy) {
+  const auto& coverage = diagnostics["time_coverage"];
+  if ((policy == "review" || policy == "keep-all") && coverage.isMember("code"))
+    diagnostics["warnings"].append(coverage["message"].asString() + "\n" +
+                                    coverage["coverageSummary"].asString());
+}
 
 class Workspace {
 public:
@@ -413,6 +421,7 @@ EnvironmentRequest SingleComponentRequest(const EnvironmentRequest& request,
   child.output = output;
   child.overwrite = true;
   child.keep_intermediate = request.keep_intermediate;
+  child.time_policy = "keep-all";
   return child;
 }
 
@@ -681,6 +690,9 @@ EnvironmentResult GenerateExtendedEnvironment(const EnvironmentRequest& request,
   if (streams.empty())
     throw ValidationError("forecast extension produced no environmental data");
 
+  diagnostics["time_coverage"] = ApplyGribTimePolicy(
+      streams, request.time_policy, workspace.File(".").parent_path());
+  AddTimeCoverageNote(diagnostics, request.time_policy);
   Report(progress, "compositing extended environmental GRIB",
          "preferred model records take priority over fallback records");
   const auto merged = CompositeGribStreamsPreferFirst(
@@ -712,6 +724,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
   CheckCancellation();
   progress = SynchronizedProgressCallback(std::move(progress));
   request.bbox.Validate();
+  const auto preflight = PreflightEnvironment(request);
+  if (!preflight["ready"].asBool()) throw PreflightError(preflight["issues"][0]);
   BuildTimeSequence(request.start, request.hours, request.step_hours);
   if (request.output.empty())
     throw ValidationError("environment output path is required");
@@ -772,6 +786,20 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
           "circulation");
     }
   }
+  TimedGribInputs existing;
+  if (request.weather_provider == "existing-file" && request.weather_file)
+    existing.emplace_back("weather", *request.weather_file);
+  if (current_source == "existing-file" && request.current_file)
+    existing.emplace_back("current", *request.current_file);
+  if (!existing.empty()) {
+    const auto issue = PreflightGribTimes(existing);
+    if (issue["requiresDecision"].asBool() && request.time_policy == "review")
+      throw PreflightError(issue);
+    // Preserve the established rejection for disjoint weather/current inputs,
+    // including dry runs, even for legacy callers retaining all records.
+    if (issue["code"] == "no_time_overlap" && request.time_policy == "keep-all")
+      throw PreflightError(issue);
+  }
   if (request.dry_run) {
     return {request.output,
             0,
@@ -824,6 +852,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     child.output = workspace.File("waves.grb");
     child.overwrite = true;
     child.parallel_components = false;
+    child.time_policy = "keep-all";  // Review the combined component timelines.
     wave_future.emplace(std::async(
         std::launch::async,
         [child = std::move(child), http_get, now, progress]() mutable {
@@ -856,6 +885,7 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     child.include_waves = false;
     child.current_source = current_source;
     child.parallel_components = false;
+    child.time_policy = "keep-all";  // Review the combined component timelines.
     child.output = workspace.File("current.grb");
     child.overwrite = true;
     current_future.emplace(std::async(
@@ -1412,6 +1442,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
       path = continuous;
     }
   }
+  diagnostics["time_coverage"] = ApplyGribTimePolicy(
+      streams, request.time_policy, workspace.File(".").parent_path());
   Report(progress, "merging environmental GRIB",
          std::to_string(streams.size()) + " streams");
   EnvironmentalMergeRequest merge_request;
@@ -1437,6 +1469,8 @@ EnvironmentResult GenerateEnvironment(const EnvironmentRequest& request,
     (void)label;
     input_paths.push_back(path);
   }
+  for (const auto& warning : merged.warnings) diagnostics["warnings"].append(warning);
+  AddTimeCoverageNote(diagnostics, request.time_policy);
   resume.Complete();
   return {request.output,
           merged.output_message_count,

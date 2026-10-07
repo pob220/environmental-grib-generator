@@ -513,7 +513,7 @@ int main() {
             capabilities["weatherProviders"][5].asString() == "metno_nordic" &&
             capabilities["weatherPresets"][3].asString() == "all" &&
             capabilities["antimeridianBoundingBoxes"].asBool() &&
-            capabilities["generatorVersion"].asString() == "0.3.2",
+            capabilities["generatorVersion"].asString() == "0.3.3",
         "job protocol capabilities");
   int retry_attempts = 0;
   std::vector<int> retry_delays;

@@ -8,6 +8,15 @@ call one implementation.
 The native executable also provides a versioned job-file interface intended
 for the OpenCPN plugin. See [docs/JOB_PROTOCOL.md](docs/JOB_PROTOCOL.md).
 
+Version 0.3.3 adds local forecast-time preflight to `estimate-job` and structured
+`preflight_required` errors to `run-job`. GUI requests use `timePolicy: review`:
+unsupported settings and components without a usable common UTC period require
+a decision, while usable partial field coverage retains every record and adds
+an advisory. Preferred/fallback timelines are assessed together, including
+equivalent UKV/GFS mean sea-level pressure encodings. Explicit `shared-period`
+and `common-times` policies filter stored records without interpolation or
+extrapolation; omitted `timePolicy` retains legacy `keep-all` behaviour.
+
 Version 0.3.2 adds date-line-crossing request boxes and continuous output grids
 for all geographically viable provider combinations. Bounds remain in
 `[-180, 180]`; west greater than east selects the eastward crossing interval.

@@ -11,6 +11,7 @@
 #include <json/json.h>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/preflight.h"
 #include "environmental_grib/copernicus.h"
 #include "environmental_grib/environment.h"
 #include "environmental_grib/estimate.h"
@@ -557,6 +558,10 @@ int RunJob(const std::vector<std::string>& args) {
     auto result = eg::JobStatusJson("failed");
     result["error"]["code"] = "generation_failed";
     result["error"]["message"] = error.what();
+    if (const auto* preflight = dynamic_cast<const eg::PreflightError*>(&error)) {
+      result["error"]["code"] = "preflight_required";
+      result["error"]["preflight"] = preflight->issue();
+    }
     try {
       eg::WriteJsonFileAtomic(result_path, result);
     } catch (const std::exception& write_error) {
@@ -573,8 +578,17 @@ int EstimateJob(const std::vector<std::string>& args) {
   if (args.size() != 3 || args[1] != "--job")
     throw eg::ValidationError("estimate-job requires --job FILE");
   // Intentionally never enters GenerateEnvironment or reads credentials.
-  PrintJson(eg::EstimateEnvironment(
-      eg::ParseGeneratorJob(ReadJsonFile(eg::PathFromUtf8(args[2]))).request));
+  const auto request = eg::ParseGeneratorJob(ReadJsonFile(eg::PathFromUtf8(args[2]))).request;
+  auto preflight = eg::PreflightEnvironment(request);
+  Json::Value estimate(Json::objectValue);
+  try { estimate = eg::EstimateEnvironment(request); }
+  catch (const eg::ValidationError&) {
+    estimate["schemaVersion"] = 1;
+    estimate["knownDecodedBytes"] = "0";
+    estimate["components"] = Json::Value(Json::arrayValue);
+  }
+  estimate["preflight"] = preflight;
+  PrintJson(estimate);
   return 0;
 }
 

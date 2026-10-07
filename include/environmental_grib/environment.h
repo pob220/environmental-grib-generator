@@ -56,6 +56,8 @@ struct EnvironmentRequest {
   // source which has a configured fallback.
   bool allow_partial_current_coverage{false};
   ExecutionContext execution;
+  // GUI jobs request review; legacy headless callers retain their union.
+  std::string time_policy{"keep-all"};
 };
 
 struct EnvironmentResult {

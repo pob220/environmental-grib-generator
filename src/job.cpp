@@ -86,6 +86,10 @@ GeneratorJob ParseGeneratorJob(const Json::Value& value) {
   job.request.start = ParseUtcDateTime(String(request, "start"));
   job.request.hours = Integer(request, "hours", 0);
   job.request.step_hours = Integer(request, "stepHours", 3);
+  job.request.time_policy = String(request, "timePolicy", "keep-all");
+  if (job.request.time_policy != "review" && job.request.time_policy != "keep-all" &&
+      job.request.time_policy != "shared-period" && job.request.time_policy != "common-times")
+    throw ValidationError("unsupported job timePolicy");
   job.request.cycle = String(request, "cycle", "auto");
   const auto date = String(request, "date");
   if (!date.empty()) job.request.date = date;
@@ -152,6 +156,8 @@ Json::Value GeneratorCapabilitiesJson() {
   value["schemaVersion"] = kJobSchemaVersion;
   value["generatorVersion"] = kGeneratorVersion;
   value["operations"] = StringArray({"generateEnvironment"});
+  value["temporalPreflight"] = "settings-local-v1";
+  value["timePolicies"] = StringArray({"review", "keep-all", "shared-period", "common-times"});
   value["offlineEstimateCommand"] = "estimate-job";
   value["antimeridianBoundingBoxes"] = true;
   value["weatherProviders"] = StringArray(

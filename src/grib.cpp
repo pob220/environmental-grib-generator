@@ -1,4 +1,5 @@
 #include "environmental_grib/grib.h"
+#include "environmental_grib/preflight.h"
 
 #include <eccodes.h>
 
@@ -1356,6 +1357,83 @@ Json::Value EnvironmentalMergeResultJson(
   AddStringArray(value["warnings"], result.warnings);
   AddStringArray(value["errors"], result.errors);
   return value;
+}
+
+GribTimeInventory ReadGribTimeInventory(const std::filesystem::path& path) {
+  const auto close_file = [](FILE* value) { std::fclose(value); };
+  std::unique_ptr<FILE, decltype(close_file)> file(OpenFileForReading(path), close_file);
+  if (!file) throw ValidationError("unable to open GRIB: " + PathToUtf8(path));
+  GribTimeInventory instant, interval;
+  while (true) {
+    CheckCancellation();
+    int error = 0;
+    HandlePtr handle(codes_handle_new_from_file(nullptr, file.get(), PRODUCT_GRIB, &error), &codes_handle_delete);
+    if (!handle) {
+      if (error == CODES_SUCCESS || error == CODES_END_OF_FILE) break;
+      Check(error, "reading GRIB time headers");
+    }
+    const auto time = ValidityTime(handle.get());
+    if (!time) throw ValidationError("GRIB message has no valid UTC timestamp: " + PathToUtf8(path));
+    auto name = GetString(handle.get(), "shortName").value_or("unknown");
+    if (name.empty() || name == "unknown") {
+      const auto parameter = GetLong(handle.get(), "indicatorOfParameter");
+      name = "parameter-" + std::to_string(parameter.value_or(
+          GetLong(handle.get(), "paramId").value_or(-1)));
+    }
+    auto level_type = GetString(handle.get(), "typeOfLevel").value_or("");
+    const auto level = GetLong(handle.get(), "level").value_or(0);
+    // UKV's converted mean sea-level pressure can carry surface/0 while
+    // GFS uses meanSea/0. The parameter identifies the same physical field.
+    // Normalise only this known equivalence for coverage assessment; retain
+    // all original messages and keep other parameters/levels distinct.
+    if ((name == "prmsl" || name == "msl") && level == 0 &&
+        (level_type == "surface" || level_type == "meanSea")) {
+      name = "prmsl";
+      level_type = "meanSea";
+    }
+    const auto key = name + "|" + level_type + "|" + std::to_string(level);
+    const auto step_type = GetString(handle.get(), "stepType").value_or("instant");
+    // Accumulations and extrema describe intervals, not instantaneous coverage.
+    // Their initial record can legitimately be absent at lead zero.
+    (step_type == "instant" ? instant : interval)[key].insert(*time);
+  }
+  if (instant.empty()) instant = std::move(interval);
+  if (instant.empty()) throw ValidationError("GRIB has no time records: " + PathToUtf8(path));
+  return instant;
+}
+
+std::size_t FilterGribTimes(const std::filesystem::path& input,
+                     const std::filesystem::path& output,
+                     TimePoint from, TimePoint through,
+                     const std::set<TimePoint>& selected) {
+  const auto close_file = [](FILE* value) { std::fclose(value); };
+  std::unique_ptr<FILE, decltype(close_file)> file(OpenFileForReading(input), close_file);
+  if (!file) throw ValidationError("unable to open GRIB: " + PathToUtf8(input));
+  if (input == output) throw ValidationError("time-selected output must differ from input");
+  std::ofstream destination(output, std::ios::binary | std::ios::trunc);
+  if (!destination) throw ValidationError("unable to create time-selected GRIB");
+  std::size_t retained = 0;
+  while (true) {
+    CheckCancellation();
+    int error = 0;
+    HandlePtr handle(codes_handle_new_from_file(nullptr, file.get(), PRODUCT_GRIB, &error), &codes_handle_delete);
+    if (!handle) {
+      if (error == CODES_SUCCESS || error == CODES_END_OF_FILE) break;
+      Check(error, "reading GRIB time headers");
+    }
+    const auto time = ValidityTime(handle.get());
+    if (!time) throw ValidationError("cannot select a GRIB message without a valid UTC timestamp");
+    if (*time < from || *time > through || (!selected.empty() && !selected.count(*time))) continue;
+    const void* bytes = nullptr;
+    std::size_t length = 0;
+    Check(codes_get_message(handle.get(), &bytes, &length), "reading encoded GRIB message");
+    destination.write(static_cast<const char*>(bytes), static_cast<std::streamsize>(length));
+    if (!destination) throw ValidationError("failed writing time-selected GRIB");
+    ++retained;
+  }
+  destination.close();
+  if (!destination) throw ValidationError("failed closing time-selected GRIB");
+  return retained;
 }
 
 MergeStreamsResult CompositeGribStreamsPreferFirst(

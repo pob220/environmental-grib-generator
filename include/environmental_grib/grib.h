@@ -5,6 +5,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,6 +104,10 @@ GribNormalizeResult NormalizeGribStream(const std::filesystem::path& input,
 GribWriteSummary RepackGrib2ToSimplePacking(
     const std::filesystem::path& input,
     const std::filesystem::path& output);
+std::size_t FilterGribTimes(const std::filesystem::path& input,
+                     const std::filesystem::path& output,
+                     TimePoint from, TimePoint through,
+                     const std::set<TimePoint>& selected = {});
 Json::Value InspectGrib(const std::filesystem::path& path);
 /** Crop and spatially stitch matching regular-lat/lon records. Fragments must
  * share forecast identity and grid geometry. Coordinates/data are reordered

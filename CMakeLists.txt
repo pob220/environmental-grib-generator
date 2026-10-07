@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(environmental_grib_generator VERSION 0.3.2 LANGUAGES CXX)
+project(environmental_grib_generator VERSION 0.3.3 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -101,6 +101,7 @@ endif()
 add_library(environmental_grib_engine STATIC
   src/arco.cpp
   src/environment.cpp
+  src/preflight.cpp
   src/estimate.cpp
   src/copernicus.cpp
   src/geo.cpp
@@ -168,6 +169,12 @@ if(BUILD_TESTING)
   add_executable(environmental_grib_cancellation_tests tests/cancellation_tests.cpp)
   target_link_libraries(environmental_grib_cancellation_tests PRIVATE environmental_grib_engine)
   add_test(NAME environmental_grib_cancellation_tests COMMAND environmental_grib_cancellation_tests)
+  add_executable(environmental_grib_preflight_tests tests/preflight_tests.cpp)
+  target_link_libraries(environmental_grib_preflight_tests PRIVATE environmental_grib_engine)
+  if(MSVC)
+    environmental_grib_enable_windows_utf8(environmental_grib_preflight_tests)
+  endif()
+  add_test(NAME environmental_grib_preflight_tests COMMAND environmental_grib_preflight_tests)
   add_executable(environmental_grib_estimate_tests tests/estimate_tests.cpp)
   target_link_libraries(environmental_grib_estimate_tests PRIVATE environmental_grib_engine)
   if(MSVC)
@@ -176,6 +183,9 @@ if(BUILD_TESTING)
   add_test(NAME environmental_grib_estimate_tests COMMAND environmental_grib_estimate_tests)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND AND NOT ANDROID)
+    add_test(NAME environmental_grib_preflight_cli_tests
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/preflight_cli_tests.py
+              $<TARGET_FILE:environmental-grib>)
     add_test(NAME environmental_grib_size_report_cli_tests
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/size_report_cli_tests.py
               $<TARGET_FILE:environmental-grib>)

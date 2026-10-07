@@ -6,6 +6,7 @@
 #include <set>
 
 #include "environmental_grib/error.h"
+#include "environmental_grib/preflight.h"
 #include "environmental_grib/platform.h"
 #include "environmental_grib/ukv.h"
 
@@ -32,6 +33,7 @@ Json::Value EstimateEnvironment(const EnvironmentRequest& r) {
     throw ValidationError("estimate requires 0..8784 hours divisible by stepHours");
   Json::Value result(Json::objectValue);
   result["schemaVersion"] = 1;
+  result["preflight"] = PreflightEnvironment(r);
   result["components"] = Json::Value(Json::arrayValue);
   result["notes"] = Json::Value(Json::arrayValue);
   result["notes"].append("Decoded size counts double-precision numeric arrays only; generation, decoding and routing require additional memory.");
